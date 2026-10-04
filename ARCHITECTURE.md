@@ -4,12 +4,14 @@
 
 Swift + SwiftUI を候補とし、スキャン処理・集計・画面表示・ファイル操作を分離する。表示方式が Treemap から Sunburst などに増えても、走査エンジンを変更せずに済む境界を設ける。
 
+振る舞いの基準は [REQUIREMENTS.md](REQUIREMENTS.md)、用語の基準は [CONTEXT.md](CONTEXT.md) とする。以下は未実装の設計案。
+
 ```text
 SwiftUI Views
     │ user actions / view state
 ScanViewModel
-    ├── ScanCoordinator ── FileSystemScanner
-    │                         └── ScanStore / Aggregator
+    ├── ScanCoordinator ── FileSystemScanner (blocking I/O worker)
+    │         └── ScanStore / Aggregator
     ├── ItemActionService (Finder / Trash)
     └── AccessController (selected URL / scoped access)
 ```
@@ -28,22 +30,25 @@ ScanViewModel
 - 表示中のルート、選択項目、パンくず、ソート順を管理する。
 - スキャンイベントを受け取り、間引いた更新を SwiftUI に公開する。
 - 部分結果と完了結果を区別して公開する。
+- UI に公開する状態は MainActor で更新する。同期的なファイル列挙は MainActor から隔離したワーカーで行う。単に `Task` や `actor` を付けるだけでバックグラウンド化されたとみなさない。
 
 ### ScanCoordinator
 
 - 1 回のスキャンのライフサイクルを管理する。
 - 開始、進捗配信、キャンセル、完了・部分完了・失敗の状態遷移を一元化する。
-- 同じ対象への二重スキャンを抑止する。
-- スキャナーが生成するイベントを保存層と ViewModel 向けの更新へ振り分ける。
+- アプリ全体で実行中のスキャンを1件に制限し、キャンセル完了を待って次のスキャンを開始する。
+- 毎回新しい `ScanID` を割り当てる。保存と集計が済んだ版だけを ViewModel に通知し、旧スキャンのイベントは適用しない。
 
 ### FileSystemScanner
 
 - 指定 URL 配下の項目を列挙する。
+- `ScanScope` に従ってマウント境界・重複経路を除外する。隠しファイルとパッケージ内部も列挙する。
 - URL ごとに種類、論理サイズ、割り当て済みサイズ、日時などを取得する。
 - シンボリックリンクは追跡しない。
 - 個別のアクセス拒否・読み取りエラーを記録して可能な範囲で継続する。
 - キャンセルを定期的に確認し、以降の列挙を停止する。
 - 初期実装は単一の走査ワーカーを基本にする。並列化は計測後に、メモリ上限とキャンセルを保てる範囲で追加する。
+- ファイル内容は読み込まず、クラウド項目のダウンロード要求も行わない。深い階層は明示的なスタック等で扱い、再帰呼び出しによるスタック枯渇を避ける。
 
 ### ScanStore / Aggregator
 
@@ -51,6 +56,8 @@ ScanViewModel
 - ノードを UI に渡すたびに全ツリーを複製しない。
 - ディレクトリは走査中にサイズが変化するため、部分集計を更新できる。
 - 結果を取得するときは、表示階層やサイズ順一覧など必要な範囲を問い合わせる。
+- 一つの所有者でノードと索引を更新し、UI との同時書き換えを防ぐ。ノードごとに ObservableObject を作らない。
+- スキャン全体の通常ファイル索引を持ち、F-08 の一覧をページ単位で取得する。UI 更新のたびに全件ソートしない。
 
 ### ItemActionService
 
@@ -62,12 +69,13 @@ ScanViewModel
 ### AccessController
 
 - ボリュームまたはユーザーが選択したフォルダをスキャン可能な URL として扱う。
-- App Sandbox を採用する場合は、ユーザー選択によるアクセス許可と security-scoped bookmark の保存・再開を担当する。
-- スキャン終了・キャンセル時に必要なアクセス権のライフサイクルを閉じる。
+- App Sandbox を採用する場合は、ユーザー選択によるアクセス許可と security-scoped URL の有効期間を担当する。
+- スキャンと結果画面でのファイル操作ごとに必要なアクセスを開始・終了する。走査終了後のゴミ箱移動にもアクセス権が必要な点を扱う。
+- 再起動後の復元は初版に含めないため、bookmark の永続化は拡張点とし、必須実装にしない。
 
 ## 3. ドメインモデル
 
-要件上の `FileNode` は、メモリ効率と部分更新を考慮して ID 参照型のレコードとして表現する。
+走査項目は、メモリ効率と部分更新を考慮して ID 参照型の `ScanItem` として表現する。
 
 ```text
 ScanItem
@@ -75,57 +83,113 @@ ScanItem
 ├── parentID: ItemID?
 ├── name: String
 ├── kind: file | directory | symbolicLink | other
+├── isPackage: Bool
 ├── logicalSize: Int64?
 ├── allocatedSize: Int64?
-├── aggregatedSize: Int64?
+├── sizeSummary: SizeSummary
 ├── modifiedDate: Date?
 ├── createdDate: Date?
 ├── accessState: readable | denied | error | notScanned
+├── traversalState: pending | partial | complete | excluded
+├── fileIdentity: FileIdentity?
+├── exclusionReason: ExclusionReason?
 └── errorDescription: String?
+
+SizeSummary
+├── knownLogicalBytes: Int64
+├── knownAllocatedBytes: Int64
+├── unknownLogicalItems: Int
+├── unknownAllocatedItems: Int
+├── unreadableLocations: Int
+└── hasUnvisitedDescendants: Bool
+
+ScanResult
+├── scanID: ScanID
+├── scope: ScanScope
+├── state: ScanState
+├── startedAt / finishedAt
+├── revision: Int
+└── isStale: Bool
 ```
 
 - 親子関係は `parentID` と子 ID の索引で管理する。パス文字列を各ノードに重複保存せず、必要時に親をたどって組み立てる。
 - URL は列挙時や操作時に必要な範囲で構成する。ユーザー選択ルート URL と相対パスを使う設計を優先する。
-- `allocatedSize` が取得できない項目を 0 とみなさない。フォルダ集計には不明が含まれることを保持し、表示上も完全な合計と誤解させない。
-- `ScanState` は `idle`, `scanning`, `completed`, `cancelled`, `completedWithErrors`, `failed` を基本とする。
+- `name` はパス構築に使う実ファイル名とし、ローカライズされた表示名と混同しない。
+- 自身のサイズは通常ファイルについて保持する。フォルダの合計は `sizeSummary` に保持し、フォルダのメタデータサイズで上書きしない。
+- `allocatedSize` が取得できない項目を 0 とみなさない。既知合計と不明件数を独立して保持し、祖先へ伝播する。読めないフォルダは `unreadableLocations` に加え、その配下の未知件数は作らない。
+- `traversalState` はアクセス可否と別に、列挙の完了度を示す。列挙エラーやキャンセルがあれば該当フォルダと祖先を `partial` とする。除外は結果の範囲情報に残す。
+- `fileIdentity` は、取得できる場合のボリューム識別子とファイル識別子の組など。UI 用 ID と分離し、ゴミ箱操作前の置換検知とディレクトリ別経路の重複検知に使う。
+
+### 状態遷移
+
+```text
+idle / 終端状態 → scanning
+scanning → completed | completedWithErrors | failed
+scanning → cancelling → cancelled
+```
+
+- `completed`: 定義した範囲内の走査が完了。方針による除外は範囲情報に表示する。
+- `completedWithErrors`: 走査は終了したが、アクセス・列挙・サイズ取得などに未取得情報がある。
+- `failed`: ルートを列挙できない、または処理継続不能。取得済み情報があれば部分結果として保持する。
+- `cancelled`: 停止要求が完了した部分結果。完了と競合した場合も終端状態は一度だけ確定する。
+- `isStale` はこれらの状態と別に保持する。ゴミ箱移動に成功しても走査完了という過去の事実は変更せず、結果を古いと表示する。
 
 ## 4. スキャンイベントと UI 更新
 
 スキャナーはファイルごとの SwiftUI 更新を発生させず、次のようなイベントまたはバッチを生成する。
 
 ```text
-ScanStarted(root)
-ItemsDiscovered(batch)
-ScanProgress(filesVisited, directoriesVisited, skippedCount, elapsed)
-ScanFinished(state, summary)
+ScanStarted(scanID, scope)
+ItemsDiscovered(scanID, batch)               // 内部保存用
+ScanProgress(scanID, revision, counts, elapsed) // UI 通知用
+ScanFinished(scanID, revision, state, summary)
 ```
 
 - 項目の保存・集計はスキャン処理側で行い、UI 通知は 100〜500 ms 程度の間隔でまとめる。
 - 総項目数が不明な間は割合を計算しない。
 - SwiftUI へ公開するデータは表示階層・現在のソート条件に必要な分に限定する。
 - キャンセル時はすでに保存した項目と集計を保持し、状態を `cancelled` として明示する。
+- 保存用バッチのキューには上限を設け、満杯なら列挙側を待たせる。ノード情報を破棄して速度を維持しない。UI 用進捗は最新のみ保持してよい。
+- 通常の通知間隔は250 msを初期値とする。完了・キャンセル・失敗時は未反映バッチと集計を確定してから、最終イベントを通知する。
+- 件数は、列挙項目数、種類を識別できた通常ファイル数・ディレクトリ数、問題のある項目数、意図的除外数を分ける。読めないフォルダの内部件数をスキップ数に推測加算しない。
+- 一覧や Treemap の非同期問い合わせにも `scanID` と版を付け、旧問い合わせの応答で新しい画面を上書きしない。
 
 ## 5. 集計ルール
 
-1. 通常ファイルの `allocatedSize` を自身の容量として記録する。
-2. フォルダ自身の集計値は、子ファイルと子フォルダの集計値から更新する。
-3. シンボリックリンクはリンク先を走査せず、ターゲットの容量を加えない。
-4. 読めない項目はエラー状態を記録し、既知サイズを推測しない。
-5. APFS の共有ブロック等を完全解析しないため、結果は「走査項目の容量集計」として表示する。
+1. 通常ファイルの論理サイズと割り当て済みサイズを別に記録する。初期の取得候補は `fileSize` と `totalFileAllocatedSize`。後者はメタデータ分も含むので、取得値の意味を統一する。[Apple の API 定義](https://developer.apple.com/documentation/foundation/urlresourcekey/totalfileallocatedsizekey)
+2. 割り当て済みサイズ取得に失敗しても論理サイズで代用しない。既知の0 bytesと取得不能を区別する。
+3. フォルダの集計は子の `SizeSummary` の合計とする。子の更新差分を祖先へ伝播し、子孫を二重加算しない。空フォルダは0 bytesかつ列挙完了となる。
+4. シンボリックリンク、特殊ファイル、ディレクトリ自身の容量は加算しない。パッケージは配下ファイルの合計とする。
+5. 初版の通常ファイル集計はパス単位とする。ハードリンクのファイル識別子が同じでも重複排除は行わず、APFS の共有ブロックも解析しない。
+6. Treemap の分母は直下項目の既知合計とし、部分結果であることを添える。0・不明の項目は一覧に残す。
+
+### 走査範囲
+
+`ScanScope` はルート URL、起動ディスクか通常のボリューム／フォルダか、許可するボリューム識別子、除外規則を保持する。
+
+- 起動ディスクの論理ルート `/` では System / Data を一組として扱い、`/Users` 等を含める。別名経路の `/System/Volumes`、他のマウント先 `/Volumes`、デバイス領域 `/dev` を配下走査から除外するのを初期方針とする。
+- 通常のボリューム／フォルダでは、そのルートが属するボリューム内を走査し、入れ子の別マウントには入らない。直接選択されたルート自身を除外規則で誤って除外しない。
+- 訪問済みディレクトリの識別情報で別経路の再訪を防ぐ。これは通常ファイルのハードリンク重複排除とは別処理。識別不能な環境でも範囲規則を守り、根拠なく同一判定しない。
+- OS ごとの差を避けるため、上記の起動ディスク解決と除外規則は Phase 0 で対象 macOS 上の小規模試作により確認する。通常のシンボリックリンク処理だけで firmlink を扱えるとは仮定しない。[Apple の firmlink 説明](https://developer.apple.com/videos/play/wwdc2019/710/)
 
 ## 6. 権限・失敗の扱い
 
-- ルートを開けない場合はスキャンを開始せず、アクセス権の案内を表示する。
+- ルートを列挙できない場合は `failed` にして、対象の再選択やアクセス権の案内を表示する。
 - 配下の一部にアクセスできない場合は、その項目を `denied` とし、他の場所の走査を続ける。
 - 項目が列挙後に消えた場合やメタデータ取得に失敗した場合は `error` として記録する。
 - Full Disk Access の案内を出しても、その権限の取得自体をアプリが自動化しない。
-- アプリの配布形態と Sandbox 方針を決めた後、ボリューム選択・再起動後の再アクセス方法を確定する。
+- アプリの配布形態と Sandbox 方針を決めた後、ボリューム選択と結果画面からの再アクセス方法を確定する。
+- Sandbox の範囲、プライバシー権限、POSIX / ACL 等の制約を別に扱う。読み取り成功から移動可能と判定しない。取得したエラーを保存し、原因が不明なら Full Disk Access 不足と断定しない。
 
 ## 7. ファイル操作
 
 - Finder 表示とゴミ箱移動はスキャンエンジンから独立したサービスにする。
-- ゴミ箱移動前に UI で確認し、サービス側でも保護ルートと対象 URL を検証する。
-- 成功後は当該項目を結果から削除または古い結果として明示し、再走査を促す。
+- 初版の対象は通常ファイル1件のみ。走査中・キャンセル待ち・操作中の移動を禁止する。
+- 確認後、サービス側で対象の種類・識別情報・スキャン範囲・保護パス・パッケージ祖先を再確認する。単純な文字列前方一致だけでパス包含を判定しない。親のリンク経路が変わっていないことも確認し、識別不能や変化があれば操作を中止して再選択を促す。
+- パッケージ判定はスキャンルートより上の祖先も含める。パッケージ内部のフォルダを直接選んでも内部ファイルの移動を許可しない。
+- `FileManager.trashItem(at:resultingItemURL:)` による移動を使う。失敗時はエラーを返し、完全削除へフォールバックしない。[Apple の API 定義](https://developer.apple.com/documentation/foundation/filemanager/trashitem(at:resultingitemurl:))
+- 成功後は当該行を「移動済み」として操作を無効にし、結果全体に `isStale` を設定する。元の集計を即時に差し引く処理はせず、ルート全体の再スキャンで更新する。
+- ボリュームの空き容量は OS から再取得する。ゴミ箱も対象範囲内なら再スキャン集計に引き続き含まれ得るため、移動サイズを容量削減量として報告しない。
 - ファイルシステムが操作を拒否した場合は理由を利用者向けに表示し、スキャン結果自体は保持する。
 
 ## 8. パフォーマンス上の判断
@@ -135,11 +199,13 @@ ScanFinished(state, summary)
 - スキャン中は結果を段階的に参照できるようにし、完了まで全結果を UI 用配列にコピーしない。
 - まず単一ワーカーで正しさと応答性を確保する。並列走査は計測結果に基づいて判断する。
 - 100 万件規模でのメモリ使用量が問題になる場合、表示に不要な属性の保持、永続化、索引方式を別途評価する。
+- 大きいフォルダは一覧をページングし、描画しきれない Treemap の小さい項目は「その他」にまとめて一覧へつなぐ。走査結果そのものは間引かない。
 
 ## 9. 未確定の設計判断
 
 - App Sandbox の採否と、Mac App Store を配布先に含めるか。
 - 最低対応 macOS バージョン。
 - 永続スキャン結果をディスクに保存するか。初版ではメモリ保持を基本とする。
-- 保護対象パスの正確な定義と、フォルダ自体をゴミ箱へ移動できるか。
-- 大規模走査時の永続化・ページング導入基準。
+- 保護対象パスの正確な定義。フォルダ等のゴミ箱移動は初版に含めない。
+- 大規模走査時にメモリ内索引をディスク上の索引へ切り替える基準。
+- 性能目標の評価環境と数値上限。基本のページングと更新キュー上限は初版から導入する。
