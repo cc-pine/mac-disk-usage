@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchain
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+      - name: Build app bundle
+        run: scripts/make-app.sh
+
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # tools-version の下限と、ローカル開発で使う版の両方で確認する
+        swift: ["6.0", "6.3"]
+    container: swift:${{ matrix.swift }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test
+        run: swift test
