@@ -175,7 +175,8 @@ public struct ScanItem: Identifiable, Equatable, Sendable {
         case .directory:
             return sizeSummary.isIncomplete || traversalState == .pending || traversalState == .partial
         case .symbolicLink, .other:
-            return false
+            // 読めた特殊項目は方針で数えないだけ。読めなかった項目はサイズ不明。
+            return accessState != .readable
         }
     }
 
