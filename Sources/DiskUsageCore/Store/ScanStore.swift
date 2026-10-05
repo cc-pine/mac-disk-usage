@@ -18,6 +18,28 @@ public struct ItemPage: Sendable, Equatable {
     }
 }
 
+/// 場所の一覧で区別する項目の分類。アクセスできなかった場所と、方針による除外を混ぜない。
+public enum ItemCategory: Sendable, Equatable {
+    /// アクセス拒否・読み取りエラー・クラウド上のみなど、情報を取得できなかった項目
+    case problems
+    /// 別ボリューム・別経路・範囲規則により意図的に走査しなかった項目
+    case excluded
+}
+
+public struct LocatedItem: Sendable, Equatable, Identifiable {
+    public let item: ScanItem
+    public let path: String
+
+    public var id: ItemID { item.id }
+}
+
+public struct LocatedItemPage: Sendable, Equatable {
+    public let items: [LocatedItem]
+    public let offset: Int
+    public let totalCount: Int
+    public let revision: Int
+}
+
 /// スキャン項目と親子索引、フォルダ集計、通常ファイル索引を保持する。
 ///
 /// 書き込みはスキャンの保存処理だけが行い、UI からは問い合わせだけを行う。
@@ -45,6 +67,10 @@ public final class ScanStore: @unchecked Sendable {
     private var isFinalized = false
     private var topFiles: MinHeap
     private var fileIDs: [Int32] = []
+    /// 読み取れなかった項目（発見順）。件数は counts.problemItems と一致する
+    private var problemIDs: [Int32] = []
+    /// 範囲の方針で除外した項目（発見順）
+    private var excludedIDs: [Int32] = []
     private var sortedFileIndex: [Int32]?
     private var isPreparingFileIndex = false
     /// 全件索引の完成を待つための条件変数（lock とは独立に取る）
@@ -189,6 +215,11 @@ public final class ScanStore: @unchecked Sendable {
         }
 
         updateCounts(for: item)
+        if item.exclusionReason != nil {
+            excludedIDs.append(Int32(index))
+        } else if item.accessState != .readable {
+            problemIDs.append(Int32(index))
+        }
         if item.kind == .file, item.exclusionReason == nil {
             fileIDs.append(Int32(index))
             if item.allocatedSize != nil {
@@ -238,6 +269,7 @@ public final class ScanStore: @unchecked Sendable {
             nodes[index].subtreeIncomplete = true
             if wasReadable {
                 counts.problemItems += 1
+                problemIDs.append(Int32(index))
                 addToAncestors(of: index, SizeSummary(unreadableLocations: 1))
             }
         case .interrupted(let message):
@@ -249,6 +281,7 @@ public final class ScanStore: @unchecked Sendable {
                 if nodes[index].accessState == .readable {
                     nodes[index].accessState = .error
                     counts.problemItems += 1
+                    problemIDs.append(Int32(index))
                 }
             }
         }
@@ -426,6 +459,19 @@ public final class ScanStore: @unchecked Sendable {
         isFileIndexBuilt = true
         indexBuilt.broadcast()
         indexBuilt.unlock()
+    }
+
+    /// 読み取れなかった場所、または範囲の方針で除外した場所を、発見順にパス付きで返す。
+    public func locatedItems(_ category: ItemCategory, offset: Int = 0, limit: Int = 200) -> LocatedItemPage {
+        lock.lock()
+        defer { lock.unlock() }
+        let ids = category == .problems ? problemIDs : excludedIDs
+        let start = min(max(0, offset), ids.count)
+        let end = start + min(max(0, limit), ids.count - start)
+        let items = ids[start..<end].map { id in
+            LocatedItem(item: snapshot(Int(id)), path: pathLocked(Int(id)))
+        }
+        return LocatedItemPage(items: items, offset: start, totalCount: ids.count, revision: revision)
     }
 
     /// ルートからの ID 列（パンくず用）。ルートが先頭。

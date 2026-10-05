@@ -38,6 +38,13 @@ struct DetailView: View {
                         Text(error)
                             .foregroundStyle(.secondary)
                     }
+                    if let reason = item.exclusionReason {
+                        Text("\(DisplayText.exclusion(reason))。読み取りに失敗したわけではありません。")
+                            .foregroundStyle(.secondary)
+                    }
+                    if item.accessState == .denied {
+                        PermissionGuidance()
+                    }
                     if model.movedItems.contains(item.id) {
                         Label("ゴミ箱へ移動済み", systemImage: "trash")
                             .foregroundStyle(.orange)

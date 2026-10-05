@@ -260,6 +260,30 @@ final class FileSystemScannerTests: XCTestCase {
         XCTAssertEqual(store.item(store.rootID!)!.sizeSummary.unreadableLocations, 1)
     }
 
+    func testProblemAndExcludedLocationsAreListedSeparately() {
+        let fs = MockFileSystem(rootDevice: 1)
+        fs.dir("/locked").dir("/mnt", device: 2).dir("/iCloud", isDataless: true)
+        fs.dir("/big").file("/big/1", allocated: 1).file("/big/2", allocated: 1)
+        fs.file("/gone", allocated: 1)
+        fs.denyListing("/locked")
+        fs.failMetadata("/gone")
+        fs.interruptListing("/big", after: 1)
+        let (store, _) = scan(fs)
+
+        let problems = store.locatedItems(.problems)
+        XCTAssertEqual(problems.totalCount, store.currentCounts.problemItems)
+        XCTAssertEqual(Set(problems.items.map(\.path)), ["/locked", "/iCloud", "/big", "/gone"])
+        XCTAssertEqual(problems.items.first { $0.path == "/locked" }?.item.accessState, .denied)
+        XCTAssertEqual(problems.items.first { $0.path == "/iCloud" }?.item.accessState, .notScanned)
+
+        let excluded = store.locatedItems(.excluded)
+        XCTAssertEqual(excluded.items.map(\.path), ["/mnt"])
+        XCTAssertEqual(excluded.items.first?.item.exclusionReason, .otherVolume)
+        XCTAssertEqual(excluded.totalCount, store.currentCounts.excludedItems)
+
+        XCTAssertEqual(store.locatedItems(.problems, offset: 1, limit: 2).items.count, 2)
+    }
+
     func testScopeRejectsUnsafeRoots() {
         XCTAssertNil(ScanScope(rootPath: "", kind: .folder))
         XCTAssertNil(ScanScope(rootPath: "relative/path", kind: .folder))

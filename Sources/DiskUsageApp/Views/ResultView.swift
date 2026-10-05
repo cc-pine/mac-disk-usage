@@ -57,6 +57,11 @@ private struct ResultHeader: View {
                         .font(.callout)
                         .foregroundStyle(.red)
                 }
+                if let problems = model.progress?.counts.problemItems, problems > 0 {
+                    Text("一部の場所を読み取れませんでした。画面下の「読み取れなかった項目」から場所を確認できます。")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
                 if model.result?.isStale == true {
                     Text("ゴミ箱へ移動した項目があります。最新の容量は再スキャンで確認してください。")
                         .font(.callout)
@@ -157,18 +162,36 @@ private struct BreadcrumbBar: View {
 
 private struct StatusFooter: View {
     @Environment(ScanViewModel.self) private var model
+    @State private var sheet: ItemCategory?
 
     var body: some View {
+        content
+            .sheet(isPresented: Binding(get: { sheet != nil }, set: { if !$0 { sheet = nil } })) {
+                if let sheet, let session = model.session {
+                    LocationsSheet(category: sheet, session: session)
+                }
+            }
+    }
+
+    private var content: some View {
         HStack(spacing: 16) {
             if let progress = model.progress {
                 let counts = progress.counts
                 Text("ファイル \(counts.files.formatted()) 件")
                 Text("フォルダ \(counts.directories.formatted()) 件")
-                Text("問題 \(counts.problemItems.formatted()) 件")
-                    .foregroundStyle(counts.problemItems > 0 ? .orange : .secondary)
-                    .help("アクセス拒否・読み取りエラー・クラウド上のみなど、情報を取得できなかった項目の数")
-                Text("範囲外 \(counts.excludedItems.formatted()) 件")
-                    .help("別ボリュームや別経路など、方針により走査しなかった場所の数")
+                Button("読み取れなかった項目 \(counts.problemItems.formatted()) 件") {
+                    sheet = .problems
+                }
+                .buttonStyle(.link)
+                .foregroundStyle(counts.problemItems > 0 ? .orange : .secondary)
+                .disabled(counts.problemItems == 0)
+                .help("アクセス拒否・読み取りエラー・クラウド上のみなど、情報を取得できなかった項目。クリックで一覧を表示")
+                Button("範囲外 \(counts.excludedItems.formatted()) 件") {
+                    sheet = .excluded
+                }
+                .buttonStyle(.link)
+                .disabled(counts.excludedItems == 0)
+                .help("別ボリュームや別経路など、方針により走査しなかった場所。クリックで一覧を表示")
                 ElapsedText(progress: progress)
                 if let finished = progress.finishedAt {
                     Text("\(DisplayText.time(progress.startedAt))〜\(DisplayText.time(finished))")
