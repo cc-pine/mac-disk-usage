@@ -94,7 +94,9 @@ public struct POSIXFileSystem: FileSystemProvider {
         metadata.linkCount = Int(info.st_nlink)
         if kind == .file {
             metadata.logicalSize = Int64(info.st_size)
-            metadata.allocatedSize = Int64(info.st_blocks) * 512
+            // 異常な st_blocks（FUSE・ネットワークなど）で桁あふれさせず、不明として扱う
+            let (allocated, overflow) = Int64(info.st_blocks).multipliedReportingOverflow(by: 512)
+            metadata.allocatedSize = overflow || allocated < 0 ? nil : allocated
         }
         if kind == .directory {
             if metadata.isDataless {
@@ -159,7 +161,12 @@ public struct POSIXFileSystem: FileSystemProvider {
 
     private static func createdDate(_ info: stat) -> Date? {
         #if canImport(Darwin)
-        return date(info.st_birthtimespec)
+        // 作成日時を持たないファイルシステムでは 0 が入るため、1970年ではなく不明とする
+        let birth = info.st_birthtimespec
+        if birth.tv_sec == 0, birth.tv_nsec == 0 {
+            return nil
+        }
+        return date(birth)
         #else
         return nil
         #endif

@@ -1,24 +1,52 @@
 import Foundation
 
+/// 移動対象への参照。確認の前に作り、確認した実体を指したまま移動に使う。
+public struct TrashTarget: Sendable {
+    public let path: String
+    public let url: URL
+
+    public init(path: String, url: URL) {
+        self.path = path
+        self.url = url
+    }
+}
+
 /// macOS のゴミ箱へ移す処理の境界。完全削除へのフォールバックを実装してはならない。
 public protocol Trasher: Sendable {
+    /// 再確認の前に呼び、パスを現在の実体への参照に変える。
+    func target(forPath path: String) -> TrashTarget
     /// - Returns: ゴミ箱内の移動先パス（取得できれば）
-    func moveToTrash(atPath path: String) throws -> String?
+    func moveToTrash(_ target: TrashTarget) throws -> String?
+}
+
+extension Trasher {
+    public func target(forPath path: String) -> TrashTarget {
+        TrashTarget(path: path, url: URL(fileURLWithPath: path))
+    }
 }
 
 /// `FileManager.trashItem` による実装。macOS 以外では常に失敗する。
 ///
-/// パスを再解決している間に別の項目へ置き換わる余地を減らすため、確認済みの項目を
-/// ファイル参照 URL（オブジェクト ID による参照）に変換してから移動する。
+/// 再確認と移動の間にパスが別の項目へ置き換わる余地を減らすため、再確認の前に
+/// ファイル参照 URL（オブジェクト ID による参照）を作り、それを移動に使う。
+/// 参照を作れない場合はパスの URL を使い、移動後の識別情報の確認で取り違えを知らせる。
 public struct FoundationTrasher: Trasher {
     public init() {}
 
-    public func moveToTrash(atPath path: String) throws -> String? {
-        #if os(macOS)
+    public func target(forPath path: String) -> TrashTarget {
         let pathURL = URL(fileURLWithPath: path)
-        let target = (pathURL as NSURL).fileReferenceURL() ?? pathURL
+        #if os(macOS)
+        if let reference = (pathURL as NSURL).fileReferenceURL() {
+            return TrashTarget(path: path, url: reference)
+        }
+        #endif
+        return TrashTarget(path: path, url: pathURL)
+    }
+
+    public func moveToTrash(_ target: TrashTarget) throws -> String? {
+        #if os(macOS)
         var resulting: NSURL?
-        try FileManager.default.trashItem(at: target, resultingItemURL: &resulting)
+        try FileManager.default.trashItem(at: target.url, resultingItemURL: &resulting)
         return resulting?.path
         #else
         throw TrashFailure.unsupported
@@ -60,6 +88,8 @@ public enum TrashFailure: Error, Equatable, Sendable {
 public struct TrashOutcome: Equatable, Sendable {
     public let candidate: TrashCandidate
     public let trashedPath: String?
+    /// ゴミ箱内の項目が確認した項目と同じ実体だと確かめられたか（移動先を読めない場合は false）
+    public let isVerified: Bool
 }
 
 /// Finder 表示以外のファイル操作（ゴミ箱移動）を、スキャンエンジンから独立して扱う。
@@ -143,7 +173,7 @@ public final class ItemActionService: @unchecked Sendable {
         guard PathUtilities.isSameOrDescendant(path, of: session.scope.rootPath), path != session.scope.rootPath else {
             return .failure(.outsideScope)
         }
-        if let root = policy.protectedRoot(containing: path) {
+        if let root = policy.protectedRoot(containing: path, volumeRoots: volumeRoots(above: id, in: session)) {
             return .failure(.protectedLocation(root))
         }
         let ancestry = store.ancestry(of: id).dropLast()
@@ -185,13 +215,15 @@ public final class ItemActionService: @unchecked Sendable {
             break
         }
 
+        // 参照は再確認の前に作り、確認した実体を指したまま移動に使う
+        let target = trasher.target(forPath: candidate.path)
         if let problem = verifyOnDisk(candidate, in: session) {
             return .failure(.changedSinceScan(problem))
         }
 
         let trashedPath: String?
         do {
-            trashedPath = try trasher.moveToTrash(atPath: candidate.path)
+            trashedPath = try trasher.moveToTrash(target)
         } catch let failure as TrashFailure {
             return .failure(failure)
         } catch {
@@ -203,16 +235,16 @@ public final class ItemActionService: @unchecked Sendable {
         lock.unlock()
         session.markStale()
 
-        // ゴミ箱に入った項目が確認した項目と同じかを確かめる（取り違えを利用者に知らせる）
-        if let trashedPath {
-            switch provider.metadata(atPath: trashedPath) {
-            case .success(let metadata) where metadata.identity != candidate.identity:
+        // ゴミ箱に入った項目が確認した項目と同じかを確かめる（取り違えを利用者に知らせる）。
+        // 移動先を読めない（~/.Trash へのアクセスが制限されているなど）場合は、確認できなかったことを返す。
+        var isVerified = false
+        if let trashedPath, case .success(let metadata) = provider.metadata(atPath: trashedPath) {
+            guard metadata.identity == candidate.identity else {
                 return .failure(.unexpectedItemMoved(trashedPath))
-            default:
-                break
             }
+            isVerified = true
         }
-        return .success(TrashOutcome(candidate: candidate, trashedPath: trashedPath))
+        return .success(TrashOutcome(candidate: candidate, trashedPath: trashedPath, isVerified: isVerified))
     }
 
     /// 対象と、ルートから親までの各ディレクトリが、スキャン時と同じ実体のままかを lstat で確かめる。
@@ -257,6 +289,26 @@ public final class ItemActionService: @unchecked Sendable {
             }
         }
         return nil
+    }
+
+    /// 項目より上にあるボリュームのマウント先（親とデバイスが異なるフォルダ）。
+    /// `/Volumes` 以外にマウントされたボリュームにもボリューム単位の保護規則を当てるために使う。
+    private func volumeRoots(above id: ItemID, in session: ScanSession) -> [String] {
+        let store = session.store
+        var roots: [String] = []
+        var parentDevice: UInt64?
+        if let parentPath = PathUtilities.parent(of: session.scope.rootPath),
+           case .success(let metadata) = provider.metadata(atPath: parentPath) {
+            parentDevice = metadata.identity?.device
+        }
+        for ancestorID in store.ancestry(of: id).dropLast() {
+            guard let device = store.item(ancestorID)?.fileIdentity?.device else { continue }
+            if let parentDevice, parentDevice != device, let path = store.path(of: ancestorID) {
+                roots.append(path)
+            }
+            parentDevice = device
+        }
+        return roots
     }
 
     /// スキャンルートより上の祖先にパッケージがあるか。判定できない場合は安全側（true）に倒す。

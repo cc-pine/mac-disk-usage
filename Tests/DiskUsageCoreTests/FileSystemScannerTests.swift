@@ -284,6 +284,66 @@ final class FileSystemScannerTests: XCTestCase {
         XCTAssertEqual(store.locatedItems(.problems, offset: 1, limit: 2).items.count, 2)
     }
 
+    func testInterruptedListingKeepsAccessState() {
+        let fs = MockFileSystem()
+        fs.dir("/half").file("/half/1", allocated: 1).file("/half/2", allocated: 1)
+        fs.interruptListing("/half", after: 1, error: FileSystemError(kind: .permissionDenied, code: 13, message: "Permission denied"))
+        let (store, _) = scan(fs)
+        XCTAssertEqual(child(store, "/half")?.accessState, .denied, "途中のアクセス拒否を読み取りエラーと取り違えない")
+    }
+
+    func testCloudOnlyRootIsNotListed() {
+        let fs = MockFileSystem()
+        fs.dir("/cloud", isDataless: true).file("/cloud/a", allocated: 0, logical: 100)
+        let (store, termination) = scan(fs, root: "/cloud")
+        guard case .rootFailed(let error) = termination else {
+            return XCTFail("クラウド上だけのルートは列挙せず失敗にする")
+        }
+        XCTAssertEqual(error.kind, .cloudOnly)
+        XCTAssertFalse(fs.listedPaths.contains("/cloud"))
+        XCTAssertEqual(store.item(store.rootID!)!.accessState, .notScanned)
+    }
+
+    func testFileRootKeepsItsSizes() {
+        let fs = MockFileSystem()
+        fs.file("/single.bin", allocated: 8192, logical: 8000)
+        let (store, termination) = scan(fs, root: "/single.bin")
+        guard case .rootFailed = termination else { return XCTFail("フォルダではないルートは失敗にする") }
+        XCTAssertEqual(store.item(store.rootID!)!.allocatedSize, 8192)
+    }
+
+    func testHugeSizesSaturateInsteadOfWrapping() {
+        let fs = MockFileSystem()
+        fs.file("/a", allocated: .max - 10).file("/b", allocated: .max - 10)
+        let (store, _) = scan(fs)
+        XCTAssertEqual(store.item(store.rootID!)!.sizeSummary.knownAllocatedBytes, .max)
+    }
+
+    func testFolderOnStartupDiskKeepsFirmlinkedSubtreesAndExclusions() {
+        // System = 1、Data = 2。/usr/local と /System/Library/Caches は Data 側にある
+        let fs = MockFileSystem(rootDevice: 1)
+        fs.dir("/System").dir("/System/Volumes").dir("/System/Volumes/Data", device: 2, inode: 500)
+        fs.dir("/System/Library").dir("/System/Library/Caches", device: 2).file("/System/Library/Caches/c", allocated: 5, device: 2)
+        fs.dir("/usr").dir("/usr/local", device: 2).file("/usr/local/tool", allocated: 7, device: 2)
+
+        let usr = ScopeResolver.scope(forPath: "/usr", isVolume: false, provider: fs, resolve: { $0 })!
+        XCTAssertEqual(usr.allowedDevices, [1, 2])
+        let usrStore = ScanStore(rootPath: usr.rootPath)
+        _ = FileSystemScanner(scope: usr, provider: fs).run(into: usrStore)
+        XCTAssertEqual(usrStore.item(usrStore.rootID!)!.sizeSummary.knownAllocatedBytes, 7, "/usr/local を別ボリュームとして除外しない")
+
+        let system = ScopeResolver.scope(forPath: "/System", isVolume: false, provider: fs, resolve: { $0 })!
+        XCTAssertEqual(system.excludedPaths, ["/System/Volumes"], "ルートより下の起動ディスクの除外規則を引き継ぐ")
+        let systemStore = ScanStore(rootPath: system.rootPath)
+        _ = FileSystemScanner(scope: system, provider: fs).run(into: systemStore)
+        XCTAssertEqual(systemStore.item(systemStore.rootID!)!.sizeSummary.knownAllocatedBytes, 5)
+
+        // 別ボリューム上のフォルダは、そのボリュームのデバイスだけを許可する
+        fs.dir("/Volumes").dir("/Volumes/Ext", device: 3).dir("/Volumes/Ext/photos", device: 3)
+        let ext = ScopeResolver.scope(forPath: "/Volumes/Ext/photos", isVolume: false, provider: fs, resolve: { $0 })!
+        XCTAssertTrue(ext.allowedDevices.isEmpty)
+    }
+
     func testScopeRejectsUnsafeRoots() {
         XCTAssertNil(ScanScope(rootPath: "", kind: .folder))
         XCTAssertNil(ScanScope(rootPath: "relative/path", kind: .folder))

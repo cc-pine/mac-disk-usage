@@ -154,6 +154,9 @@ public final class ScanSession: @unchecked Sendable {
         store.finalize()
         // 大きなファイル一覧の全件索引を、終端を通知する前にこのスレッドで作っておく
         store.prepareFileIndex()
+        // 確定後のストアを読むだけなので、セッションのロックを持つ前に調べる
+        // （ロックを持ったままストアを待つと、MainActor からの状態の読み取りが止まる）
+        let missingInformation = hasMissingInformation()
         lock.lock()
         guard !state.isTerminal else {
             lock.unlock()
@@ -170,7 +173,7 @@ public final class ScanSession: @unchecked Sendable {
                 next = .failed
                 failureDescription = error.message
             case .finished:
-                next = hasMissingInformation() ? .completedWithErrors : .completed
+                next = missingInformation ? .completedWithErrors : .completed
             }
         }
         assert(state.canTransition(to: next), "\(state) → \(next) は許可されていない遷移")

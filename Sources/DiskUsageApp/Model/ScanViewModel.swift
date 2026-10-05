@@ -349,7 +349,15 @@ final class ScanViewModel {
             capacity = VolumeCapacity.fetch(forPath: session.scope.rootPath)
             volumes = VolumeEntry.mountedVolumes()
         }
-        if case .failure(let failure) = outcome {
+        switch outcome {
+        case .success(let moved) where !moved.isVerified:
+            message = UserMessage(
+                title: "ゴミ箱へ移動しました",
+                detail: "移動先を読み取れなかったため、ゴミ箱に入った項目が「\(candidate.name)」であることを確かめられませんでした。ゴミ箱で確認してください。"
+            )
+        case .success:
+            break
+        case .failure(let failure):
             message = UserMessage(title: "ゴミ箱へ移動できませんでした", detail: failure.message)
         }
         refresh()

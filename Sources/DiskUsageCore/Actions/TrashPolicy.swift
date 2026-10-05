@@ -84,10 +84,16 @@ public struct TrashPolicy: Sendable {
     }
 
     /// 該当する保護対象のルート。
-    public func protectedRoot(containing path: String) -> String? {
+    ///
+    /// - Parameter volumeRoots: パス上にある別ボリュームのマウント先（`/Volumes` 以外に
+    ///   マウントされたものを含む）。それぞれに `volumeRelativeRoots` を当てはめる。
+    public func protectedRoot(containing path: String, volumeRoots: [String] = []) -> String? {
         guard PathUtilities.isSafeAbsolute(path) else { return "/" }
         let components = PathUtilities.components(of: path).map { $0.lowercased() }
-        return protectedRoots.first { root in
+        let mountPatterns = volumeRoots
+            .filter { PathUtilities.isSafeAbsolute($0) && $0 != "/" }
+            .flatMap { root in Self.volumeRelativeRoots.map { PathUtilities.join(PathUtilities.normalize(root), $0) } }
+        return (protectedRoots + mountPatterns).first { root in
             let pattern = PathUtilities.components(of: root).map { $0.lowercased() }
             guard components.count >= pattern.count else { return false }
             return zip(pattern, components).allSatisfy { $0 == "*" || $0 == $1 }

@@ -20,6 +20,9 @@ public enum DisplayText {
         if item.isNotCounted {
             return "—（集計対象外）"
         }
+        if item.traversalState == .excluded {
+            return "対象外"
+        }
         guard let bytes = item.displayLogicalBytes else {
             return "不明"
         }

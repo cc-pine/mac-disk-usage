@@ -272,14 +272,14 @@ public final class ScanStore: @unchecked Sendable {
                 problemIDs.append(Int32(index))
                 addToAncestors(of: index, SizeSummary(unreadableLocations: 1))
             }
-        case .interrupted(let message):
+        case .interrupted(let message, let access):
             // 列挙しきれなかった直下の項目がある
             nodes[index].subtreeIncomplete = true
             markUnvisited(index)
             if let message {
                 errorDescriptions[Int32(index)] = message
                 if nodes[index].accessState == .readable {
-                    nodes[index].accessState = .error
+                    nodes[index].accessState = access
                     counts.problemItems += 1
                     problemIDs.append(Int32(index))
                 }
@@ -361,33 +361,63 @@ public final class ScanStore: @unchecked Sendable {
 
     /// 直下の項目をサイズ順（既知サイズの降順・不明は末尾・同サイズは名前順）でページ取得する。
     public func children(of id: ItemID, offset: Int = 0, limit: Int = .max) -> ItemPage {
+        let sorted = sortedChildren(id.index)
         lock.lock()
         defer { lock.unlock() }
-        guard nodes.indices.contains(id.index) else {
+        guard let sorted else {
             return ItemPage(items: [], offset: 0, totalCount: 0, revision: revision, isProvisional: false)
         }
-        return page(of: sortedChildren(id.index), offset: offset, limit: limit, isProvisional: false)
+        return page(of: sorted, offset: offset, limit: limit, isProvisional: false)
     }
 
-    /// 同じ版・同じフォルダへの繰り返しの問い合わせ（ページ送り・Treemap）で再ソートしない。
-    private func sortedChildren(_ index: Int) -> [Int32] {
-        if let cache = childrenCache, cache.directory == index, cache.revision == revision {
-            return cache.ids
+    /// 直下の ID をサイズ順に返す。ロックを持たずに呼ぶ。
+    ///
+    /// 鍵（サイズと名前）だけをロック内で写し、並べ替えはロックの外で行う。数十万件のフォルダを
+    /// 表示していても、保存処理と他の問い合わせを待たせない。同じ版・同じフォルダへの繰り返しの
+    /// 問い合わせ（ページ送り・Treemap）では並べ直さない。
+    private func sortedChildren(_ index: Int) -> [Int32]? {
+        lock.lock()
+        guard nodes.indices.contains(index) else {
+            lock.unlock()
+            return nil
         }
+        if let cache = childrenCache, cache.directory == index, cache.revision == revision {
+            let ids = cache.ids
+            lock.unlock()
+            return ids
+        }
+        let sortRevision = revision
+        let keyed = children[index].map { (id: $0, size: sortKey(Int($0)), name: nodes[Int($0)].name) }
+        lock.unlock()
+
         // 兄弟は親が同じで名前も一意なので、パスによる比較は不要
-        let ids = sortBySize(children[index], pathTieBreak: false)
-        childrenCache = (index, revision, ids)
-        return ids
+        let sorted = keyed.sorted { lhs, rhs in
+            let order = Self.compareSize(lhs.size, rhs.size)
+            if order != 0 {
+                return order < 0
+            }
+            if lhs.name != rhs.name {
+                return lhs.name < rhs.name
+            }
+            return lhs.id < rhs.id
+        }.map { $0.id }
+
+        lock.lock()
+        if revision == sortRevision {
+            childrenCache = (index, sortRevision, sorted)
+        }
+        lock.unlock()
+        return sorted
     }
 
     /// Treemap 用に、サイズ順の上位 `limit` 件と、残りのうちサイズが 0 より大きい項目の件数・合計を同じ版で返す。
     public func childrenForTreemap(of id: ItemID, limit: Int) -> (page: ItemPage, remainderCount: Int, remainderKnownBytes: Int64) {
+        let sorted = sortedChildren(id.index)
         lock.lock()
         defer { lock.unlock() }
-        guard nodes.indices.contains(id.index) else {
+        guard let sorted else {
             return (ItemPage(items: [], offset: 0, totalCount: 0, revision: revision, isProvisional: false), 0, 0)
         }
-        let sorted = sortedChildren(id.index)
         let page = page(of: sorted, offset: 0, limit: limit, isProvisional: false)
         var restCount = 0
         var restBytes: Int64 = 0
