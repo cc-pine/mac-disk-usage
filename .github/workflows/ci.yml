@@ -22,6 +22,7 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         # tools-version の下限と、ローカル開発で使う版の両方で確認する
         swift: ["6.0", "6.3"]

@@ -40,8 +40,8 @@ struct TreemapSnapshot: Equatable, Sendable {
 @MainActor
 @Observable
 final class ScanViewModel {
-    static let pageSize = 200
-    static let treemapLimit = 400
+    nonisolated static let pageSize = 200
+    nonisolated static let treemapLimit = 400
 
     @ObservationIgnored private let coordinator: ScanCoordinator
     @ObservationIgnored private let actions: ItemActionService

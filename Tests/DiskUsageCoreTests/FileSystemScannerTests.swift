@@ -217,7 +217,7 @@ final class FileSystemScannerTests: XCTestCase {
     func testDirectoryReplacedDuringScanIsNotEntered() {
         let fs = MockFileSystem()
         fs.dir("/a", inode: 70).file("/a/x", allocated: 5)
-        fs.onList = { path in
+        fs.onList = { @Sendable path in
             if path == "/a" {
                 // ルートの列挙で識別情報を記録した後、/a を開く直前に別の実体へ置き換わる
                 fs.replace("/a", with: FileMetadata(kind: .directory, identity: FileIdentity(device: 1, inode: 71)))

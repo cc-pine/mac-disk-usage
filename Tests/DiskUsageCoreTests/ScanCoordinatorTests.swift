@@ -64,7 +64,7 @@ final class ScanCoordinatorTests: XCTestCase {
         let fs = makeTree()
         let gate = Gate()
         let entered = DispatchSemaphore(value: 0)
-        fs.onList = { _ in
+        fs.onList = { @Sendable _ in
             entered.signal()
             gate.wait()
         }

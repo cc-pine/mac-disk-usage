@@ -191,7 +191,7 @@ final class ItemActionServiceTests: XCTestCase {
 
     func testRejectsWhileScanning() async throws {
         let gate = Gate()
-        fs.onList = { _ in gate.wait() }
+        fs.onList = { @Sendable _ in gate.wait() }
         let session = try coordinator.start(scope: ScanScope(rootPath: "/Users/me/work", kind: .folder)!)
         XCTAssertEqual(service().candidate(for: ItemID(0), in: session), .failure(.scanNotFinished))
         session.cancel()
