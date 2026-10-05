@@ -72,7 +72,7 @@ final class ScanCoordinatorTests: XCTestCase {
         let scope = ScanScope(rootPath: "/data", kind: .folder)!
         let first = try coordinator.start(scope: scope)
         // OS 呼び出しの最中にキャンセルする状況を作る
-        entered.wait()
+        blockingWait(entered)
 
         XCTAssertThrowsError(try coordinator.start(scope: scope)) { error in
             XCTAssertEqual(error as? ScanCoordinatorError, .scanInProgress)
@@ -169,4 +169,9 @@ final class Gate: @unchecked Sendable {
         condition.broadcast()
         condition.unlock()
     }
+}
+
+/// async のテストからセマフォを待つための同期関数（Darwin では async 文脈から直接 wait できない）。
+func blockingWait(_ semaphore: DispatchSemaphore) {
+    semaphore.wait()
 }

@@ -26,6 +26,34 @@ struct DiskUsageApp: App {
                 .keyboardShortcut(".", modifiers: [.command])
                 .disabled(!model.isScanActive)
             }
+            CommandMenu("移動") {
+                Button("選択項目を開く") {
+                    model.openSelection()
+                }
+                .keyboardShortcut(.downArrow, modifiers: [.command])
+                .disabled(model.selectionID == nil)
+
+                Button("親フォルダへ") {
+                    model.goUp()
+                }
+                .keyboardShortcut(.upArrow, modifiers: [.command])
+                .disabled(!model.canGoUp)
+
+                Divider()
+                ForEach(Array(ResultTab.allCases.enumerated()), id: \.element) { index, tab in
+                    Button(tab.title) {
+                        model.tab = tab
+                    }
+                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command])
+                }
+
+                Divider()
+                Button("Finder で表示") {
+                    model.revealSelectionInFinder()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(!model.canRevealSelection)
+            }
         }
     }
 }

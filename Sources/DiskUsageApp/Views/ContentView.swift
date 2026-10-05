@@ -42,17 +42,15 @@ struct ContentView: View {
         }
         .confirmationDialog(
             "ゴミ箱へ移動しますか？",
-            isPresented: Binding(
-                get: { model.pendingTrash != nil },
-                set: { if !$0 { model.pendingTrash = nil } }
-            ),
+            isPresented: $model.isTrashDialogPresented,
             presenting: model.pendingTrash
-        ) { _ in
+        ) { candidate in
             Button("ゴミ箱へ移動", role: .destructive) {
-                Task { await model.confirmTrash() }
+                // ダイアログが閉じると pendingTrash は消えるため、表示していた値をそのまま渡す
+                Task { await model.confirmTrash(candidate) }
             }
             Button("キャンセル", role: .cancel) {
-                model.pendingTrash = nil
+                model.cancelTrash()
             }
         } message: { candidate in
             Text(trashMessage(candidate))

@@ -19,7 +19,11 @@ struct TreemapView: View {
             }
             GeometryReader { proxy in
                 let result = layout(in: proxy.size)
-                if result.tiles.isEmpty {
+                if model.treemap == nil {
+                    // 表示中フォルダの問い合わせ結果がまだ届いていない
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if result.tiles.isEmpty {
                     ContentUnavailableView(
                         "表示できる容量がありません",
                         systemImage: "square.grid.2x2",
@@ -30,6 +34,7 @@ struct TreemapView: View {
                         TreemapCanvas(
                             tiles: result.tiles,
                             items: itemsByID,
+                            moved: model.movedItems,
                             selection: model.selectionID,
                             select: { select($0, result: result) },
                             activate: activate
@@ -83,6 +88,7 @@ struct TreemapView: View {
 private struct TreemapCanvas: View {
     let tiles: [TreemapTile]
     let items: [ItemID: ScanItem]
+    let moved: Set<ItemID>
     let selection: ItemID?
     let select: (TreemapTile) -> Void
     let activate: (TreemapTile) -> Void
@@ -141,6 +147,9 @@ private struct TreemapCanvas: View {
         switch tile.content {
         case .item(let id):
             let name = items[id]?.name ?? ""
+            if moved.contains(id) {
+                return "\(name)\nゴミ箱へ移動済み"
+            }
             return "\(name)\n\(ByteFormatting.string(tile.bytes))"
         case .others(let count, let bytes):
             return "その他 \(count.formatted()) 件\n\(ByteFormatting.string(bytes))"
@@ -153,6 +162,9 @@ private struct TreemapCanvas: View {
             return Color.gray.opacity(0.6)
         case .item(let id):
             guard let item = items[id] else { return .gray }
+            if moved.contains(id) {
+                return Color.gray.opacity(0.35)
+            }
             if item.kind == .directory {
                 return item.isSizeIncomplete ? Color.orange.opacity(0.75) : Color.blue.opacity(0.75)
             }

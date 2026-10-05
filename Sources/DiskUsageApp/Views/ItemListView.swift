@@ -12,7 +12,7 @@ struct ItemListView: View {
                 if page.totalCount == 0 {
                     ContentUnavailableView(emptyTitle, systemImage: "folder", description: Text(emptyDetail))
                 } else {
-                    ItemTable(items: page.items, total: totalKnownBytes, selection: $model.selectionID) { item in
+                    ItemTable(items: page.items, total: totalKnownBytes, moved: model.movedItems, selection: $model.selectionID) { item in
                         model.activate(item)
                     }
                     PageBar(page: page, pageSize: ScanViewModel.pageSize) { offset in
@@ -49,6 +49,7 @@ struct ItemListView: View {
 struct ItemTable: View {
     let items: [ScanItem]
     let total: Int64
+    var moved: Set<ItemID> = []
     @Binding var selection: ItemID?
     var showsPath: ((ScanItem) -> String?)? = nil
     let activate: (ScanItem) -> Void
@@ -77,7 +78,8 @@ struct ItemTable: View {
             TableColumn("割り当て済みサイズ") { item in
                 Text(DisplayText.size(of: item))
                     .monospacedDigit()
-                    .foregroundStyle(item.displayAllocatedBytes == nil ? .secondary : .primary)
+                    .foregroundStyle(item.displayAllocatedBytes == nil || moved.contains(item.id) ? .secondary : .primary)
+                    .strikethrough(moved.contains(item.id))
             }
             .width(min: 120, ideal: 160)
             TableColumn("割合") { item in
@@ -85,8 +87,8 @@ struct ItemTable: View {
             }
             .width(min: 60, ideal: 100)
             TableColumn("状態") { item in
-                Text(DisplayText.access(of: item))
-                    .foregroundStyle(item.accessState == .readable ? .secondary : Color.orange)
+                Text(moved.contains(item.id) ? "ゴミ箱へ移動済み" : DisplayText.access(of: item))
+                    .foregroundStyle(item.accessState == .readable && !moved.contains(item.id) ? .secondary : Color.orange)
                     .lineLimit(1)
             }
             .width(min: 80, ideal: 140)

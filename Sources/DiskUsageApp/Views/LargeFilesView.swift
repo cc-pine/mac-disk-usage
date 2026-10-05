@@ -17,7 +17,8 @@ struct LargeFilesView: View {
                 } else {
                     ItemTable(
                         items: page.items,
-                        total: model.breadcrumbs.first?.displayAllocatedBytes ?? 0,
+                        total: model.scanRoot?.displayAllocatedBytes ?? 0,
+                        moved: model.movedItems,
                         selection: $model.selectionID,
                         showsPath: { item in
                             item.id == model.selectionID ? model.selectedPath : nil

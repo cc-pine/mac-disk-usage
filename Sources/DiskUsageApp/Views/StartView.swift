@@ -95,7 +95,8 @@ private struct VolumeRow: View {
         guard let total = capacity.totalBytes else {
             return "容量情報を取得できません"
         }
+        let used = capacity.usedBytes.map { "使用 \(ByteFormatting.string($0))" } ?? "使用量不明"
         let available = capacity.availableBytes.map { "空き \(ByteFormatting.string($0))" } ?? "空き容量不明"
-        return "\(available) / \(ByteFormatting.string(total))"
+        return "\(used) / 全体 \(ByteFormatting.string(total))・\(available)（\(DisplayText.time(capacity.fetchedAt)) 時点）"
     }
 }

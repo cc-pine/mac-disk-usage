@@ -52,7 +52,17 @@ private struct ResultHeader: View {
                     .lineLimit(1)
                 Text(DisplayText.state(model.state, isStale: model.result?.isStale ?? false))
                     .foregroundStyle(stateColor)
-                if let root = model.breadcrumbs.first {
+                if model.state == .failed, let reason = model.result?.failureDescription {
+                    Text("原因: \(reason)。対象を選び直すか、アクセス権を確認してください。")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                }
+                if model.result?.isStale == true {
+                    Text("ゴミ箱へ移動した項目があります。最新の容量は再スキャンで確認してください。")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
+                if let root = model.scanRoot {
                     Text("走査項目の集計: \(DisplayText.size(of: root))")
                         .font(.callout)
                 }
@@ -121,8 +131,7 @@ private struct BreadcrumbBar: View {
                 Image(systemName: "chevron.up")
             }
             .help("親フォルダへ（⌘↑）")
-            .keyboardShortcut(.upArrow, modifiers: [.command])
-            .disabled(model.directory?.parentID == nil)
+            .disabled(!model.canGoUp)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 2) {
@@ -164,6 +173,9 @@ private struct StatusFooter: View {
                 if let finished = progress.finishedAt {
                     Text("\(DisplayText.time(progress.startedAt))〜\(DisplayText.time(finished))")
                         .foregroundStyle(.secondary)
+                } else {
+                    Text("開始 \(DisplayText.time(progress.startedAt))")
+                        .foregroundStyle(.secondary)
                 }
             }
             Spacer()
@@ -178,7 +190,8 @@ private struct StatusFooter: View {
                 Button("再スキャン") {
                     Task { await model.rescan() }
                 }
-                .disabled(model.isPreparingScan)
+                .disabled(!model.canRescan)
+                .help("選んだ対象全体を走査し直し、結果を置き換えます")
             }
         }
         .font(.callout)
