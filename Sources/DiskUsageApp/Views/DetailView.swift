@@ -39,7 +39,9 @@ struct DetailView: View {
                             .foregroundStyle(.secondary)
                     }
                     if let reason = item.exclusionReason {
-                        Text("\(DisplayText.exclusion(reason))。読み取りに失敗したわけではありません。")
+                        Text(reason == .otherVolume
+                             ? "別の対象として選ぶとスキャンできます。読み取りに失敗したわけではありません。"
+                             : "方針により走査していません。読み取りに失敗したわけではありません。")
                             .foregroundStyle(.secondary)
                     }
                     if item.accessState == .denied {

@@ -47,6 +47,10 @@ public enum DisplayText {
     }
 
     public static func access(of item: ScanItem) -> String {
+        if let reason = item.exclusionReason {
+            // 範囲外の項目は中身を読んでいないため「読み取り可」と示さない
+            return "未読込・\(exclusion(reason))"
+        }
         var parts: [String] = []
         switch item.accessState {
         case .readable: parts.append("読み取り可")

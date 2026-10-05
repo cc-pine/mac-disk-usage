@@ -57,8 +57,8 @@ private struct ResultHeader: View {
                         .font(.callout)
                         .foregroundStyle(.red)
                 }
-                if let problems = model.progress?.counts.problemItems, problems > 0 {
-                    Text("一部の場所を読み取れませんでした。画面下の「読み取れなかった項目」から場所を確認できます。")
+                if let problems = model.progress?.counts.problemItems, problems > 0, model.state != .failed {
+                    Text("情報を取得できなかった場所があります（アクセス拒否・読み取りエラー・クラウド上だけの項目など）。画面下の「情報を取得できなかった項目」から確認できます。")
                         .font(.callout)
                         .foregroundStyle(.orange)
                 }
@@ -168,8 +168,12 @@ private struct StatusFooter: View {
         content
             .sheet(isPresented: Binding(get: { sheet != nil }, set: { if !$0 { sheet = nil } })) {
                 if let sheet, let session = model.session {
-                    LocationsSheet(category: sheet, session: session)
+                    LocationsSheet(category: sheet, session: session, revision: model.progress?.revision ?? 0)
                 }
+            }
+            .onChange(of: model.session?.scanID) {
+                // 別のスキャンに切り替わったら、旧結果の一覧を閉じる
+                sheet = nil
             }
     }
 
@@ -179,7 +183,7 @@ private struct StatusFooter: View {
                 let counts = progress.counts
                 Text("ファイル \(counts.files.formatted()) 件")
                 Text("フォルダ \(counts.directories.formatted()) 件")
-                Button("読み取れなかった項目 \(counts.problemItems.formatted()) 件") {
+                Button("情報を取得できなかった項目 \(counts.problemItems.formatted()) 件") {
                     sheet = .problems
                 }
                 .buttonStyle(.link)
