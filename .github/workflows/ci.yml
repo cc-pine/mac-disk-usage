@@ -16,6 +16,13 @@ jobs:
         run: swift build
       - name: Test
         run: swift test
+        env:
+          # 起動ディスクの範囲・パッケージ判定・実際のゴミ箱移動を確かめる結合テストを有効にする
+          MDU_INTEGRATION: "1"
+      - name: Benchmark (1M synthetic files)
+        run: |
+          set -o pipefail
+          MDU_BENCHMARK=1 swift test -c release --filter BenchmarkTests 2>&1 | grep -E "benchmark|error|passed|failed"
       - name: Build app bundle
         run: scripts/make-app.sh
 
