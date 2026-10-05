@@ -25,10 +25,14 @@ public final class ScanSession: @unchecked Sendable {
     public let scope: ScanScope
     public let store: ScanStore
 
-    /// ストリームの onTermination が finish の中から同期的に呼ばれても詰まらないよう再帰ロックにする
+    /// ストリームの onTermination が finish の中から同期的に呼ばれても詰まらないよう再帰ロックにする。
+    /// 取る順序は ScanCoordinator.lock → このロック → ストアの statsLock。onTermination では
+    /// このセッションの状態だけを触り、コーディネーターなど他のロックを取らないこと（順序が逆転する）。
     private let lock = NSRecursiveLock()
     private var state: ScanState = .scanning
     private var cancelRequested = false
+    /// 走査スレッドの停止を待たずに中止を確定した
+    private var wasAbandoned = false
     private var isStale = false
     private var failureDescription: String?
     private let startedAt = Date()
@@ -39,8 +43,13 @@ public final class ScanSession: @unchecked Sendable {
     private var subscribers: [UUID: AsyncStream<ScanProgress>.Continuation] = [:]
     private var finishWaiters: [CheckedContinuation<ScanResult, Never>] = []
 
-    init(scope: ScanScope, provisionalFileLimit: Int) {
+    /// キャンセル後、走査スレッドが止まるのを待つ上限。応答しないネットワークマウントなどで
+    /// OS 呼び出しが戻らない場合でも、次のスキャンを始められるようにする。
+    let cancelGracePeriod: TimeInterval
+
+    init(scope: ScanScope, provisionalFileLimit: Int, cancelGracePeriod: TimeInterval = 5) {
         self.scope = scope
+        self.cancelGracePeriod = cancelGracePeriod
         store = ScanStore(rootPath: scope.rootPath, provisionalFileLimit: provisionalFileLimit)
     }
 
@@ -103,6 +112,24 @@ public final class ScanSession: @unchecked Sendable {
         state = .cancelling
         lock.unlock()
         publish(force: true)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + cancelGracePeriod) { [weak self] in
+            self?.abandonIfStillCancelling()
+        }
+    }
+
+    /// 猶予を過ぎても走査スレッドが止まらない場合、取得済みの結果で中止を確定する。
+    /// 止まっていないスレッドが後で届けるバッチは、確定済みのストアに保存されない。
+    private func abandonIfStillCancelling() {
+        lock.lock()
+        let stillCancelling = state == .cancelling
+        if stillCancelling {
+            wasAbandoned = true
+            failureDescription = "走査の停止を確認できないまま中止しました。応答しない場所（ネットワーク上のフォルダなど）がある可能性があります"
+        }
+        lock.unlock()
+        if stillCancelling {
+            finish(termination: .cancelled)
+        }
     }
 
     /// ゴミ箱移動などの後で、結果が古いことを記録する。走査完了という事実は変えない。

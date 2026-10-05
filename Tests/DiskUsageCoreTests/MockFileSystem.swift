@@ -16,9 +16,20 @@ final class MockFileSystem: FileSystemProvider, @unchecked Sendable {
     private var entries: [String: Entry] = [:]
     private var childNames: [String: [String]] = [:]
     private var nextInode: UInt64 = 100
+    private var storedOnList: (@Sendable (String) -> Void)?
+    private var storedListedPaths: [String] = []
+
     /// 列挙するたびに呼ばれる（キャンセル競合のテスト用）
-    var onList: (@Sendable (String) -> Void)?
-    private(set) var listedPaths: [String] = []
+    var onList: (@Sendable (String) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return storedOnList }
+        set { lock.lock(); storedOnList = newValue; lock.unlock() }
+    }
+
+    var listedPaths: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedListedPaths
+    }
 
     init(rootDevice: UInt64 = 1) {
         entries["/"] = Entry(metadata: FileMetadata(kind: .directory, identity: FileIdentity(device: rootDevice, inode: 2)))
@@ -97,8 +108,8 @@ final class MockFileSystem: FileSystemProvider, @unchecked Sendable {
 
     func listDirectory(atPath path: String, expectedIdentity: FileIdentity?) -> Result<DirectoryListing, FileSystemError> {
         lock.lock()
-        listedPaths.append(path)
-        let hook = onList
+        storedListedPaths.append(path)
+        let hook = storedOnList
         lock.unlock()
         hook?(path)
 
@@ -136,6 +147,8 @@ final class MockFileSystem: FileSystemProvider, @unchecked Sendable {
         if let inode {
             return FileIdentity(device: device, inode: inode)
         }
+        lock.lock()
+        defer { lock.unlock() }
         nextInode += 1
         return FileIdentity(device: device, inode: nextInode)
     }

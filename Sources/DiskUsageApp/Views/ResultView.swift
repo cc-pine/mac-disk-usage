@@ -85,6 +85,8 @@ private struct ResultHeader: View {
                 if model.result?.counts.problemItems ?? 0 > 0 {
                     PermissionGuidance()
                 }
+            } else if model.state == .cancelled, let note = model.result?.failureDescription {
+                Banner(text: note, color: .orange)
             } else if let problems = model.progress?.counts.problemItems, problems > 0 {
                 Banner(text: "情報を取得できなかった場所があります（アクセス拒否・読み取りエラー・クラウド上だけの項目など）。画面下の「情報を取得できなかった項目」から確認できます。", color: .orange)
             }

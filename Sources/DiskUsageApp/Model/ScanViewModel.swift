@@ -47,6 +47,8 @@ final class ScanViewModel {
     @ObservationIgnored private let actions: ItemActionService
     @ObservationIgnored private var updatesTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    /// 実行中の問い合わせが対象とするスキャン。別のスキャンの問い合わせは待たない
+    @ObservationIgnored private var refreshScanID: ScanID?
     @ObservationIgnored private var refreshPending = false
 
     // MARK: 開始画面
@@ -104,7 +106,7 @@ final class ScanViewModel {
 
     /// 走査中に同じ対象を選んだままのときは、黙ってやり直さないよう開始できなくする。
     var canStartScan: Bool {
-        guard let selectedTarget, !isPreparingScan, !isTrashing else { return false }
+        guard let selectedTarget, !isPreparingScan, !isTrashing, !isTrashDialogPresented else { return false }
         return !(isScanActive && selectedTarget == scannedTarget)
     }
 
@@ -235,7 +237,13 @@ final class ScanViewModel {
             progress = current.progress
             _ = await current.waitUntilFinished()
         }
-        guard let scope = ScopeResolver.scope(forPath: target.path, isVolume: target.isVolume) else {
+        // realpath と lstat を伴うため MainActor の外で解決する
+        let path = target.path
+        let isVolume = target.isVolume
+        let resolved = await Task.detached(priority: .userInitiated) {
+            ScopeResolver.scope(forPath: path, isVolume: isVolume)
+        }.value
+        guard let scope = resolved else {
             message = UserMessage(title: "スキャンを開始できません", detail: "「\(target.displayName)」の場所を確認できませんでした。")
             return
         }
@@ -260,6 +268,18 @@ final class ScanViewModel {
         await startScan(target)
     }
 
+    /// ボリューム容量を OS から取り直す。応答しないマウントで待たないよう MainActor の外で行う。
+    private func refreshCapacity(for session: ScanSession) {
+        let rootPath = session.scope.rootPath
+        Task { [weak self] in
+            let capacity = await Task.detached(priority: .utility) {
+                VolumeCapacity.fetch(forPath: rootPath)
+            }.value
+            guard let self, self.session === session else { return }
+            self.capacity = capacity
+        }
+    }
+
     private func attach(_ session: ScanSession, target: ScanTarget) {
         updatesTask?.cancel()
         self.session = session
@@ -267,7 +287,8 @@ final class ScanViewModel {
         selectedTarget = target
         progress = session.progress
         result = session.result
-        capacity = VolumeCapacity.fetch(forPath: session.scope.rootPath)
+        capacity = nil
+        refreshCapacity(for: session)
         directoryID = ItemID(0)
         childrenOffset = 0
         largeFilesOffset = 0
@@ -371,11 +392,14 @@ final class ScanViewModel {
     /// 子の並び順での位置を調べ、その行が先頭に来るページを表示する（表はスクロール位置を指定できないため）。
     private func reveal(_ child: ItemID, in parent: ItemID, session: ScanSession) {
         let store = session.store
+        let startOffset = childrenOffset
         Task { [weak self] in
             let position = await Task.detached(priority: .userInitiated) {
                 store.position(of: child, in: parent)
             }.value
-            guard let self, self.session === session, self.directoryID == parent, let position else { return }
+            // 待っている間に利用者がページやフォルダを変えていたら上書きしない
+            guard let self, self.session === session, self.directoryID == parent,
+                  self.childrenOffset == startOffset, let position else { return }
             self.childrenOffset = position
             self.refresh()
         }
@@ -393,15 +417,23 @@ final class ScanViewModel {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
-    /// 確認ダイアログを開く前に、最新の状態で可否を確かめる。
+    /// 確認ダイアログを開く前に、最新の状態で可否を確かめる。lstat などを伴うため MainActor の外で行う。
     func requestTrash() {
         guard let session, let item = selectedItem, !isTrashing else { return }
-        switch actions.candidate(for: item.id, in: session) {
-        case .success(let candidate):
-            pendingTrash = candidate
-            isTrashDialogPresented = true
-        case .failure(let reason):
-            message = UserMessage(title: "ゴミ箱へ移動できません", detail: reason.message)
+        let actions = self.actions
+        let id = item.id
+        Task { [weak self] in
+            let availability = await Task.detached(priority: .userInitiated) {
+                actions.candidate(for: id, in: session)
+            }.value
+            guard let self, self.session === session, self.selectionID == id else { return }
+            switch availability {
+            case .success(let candidate):
+                self.pendingTrash = candidate
+                self.isTrashDialogPresented = true
+            case .failure(let reason):
+                self.message = UserMessage(title: "ゴミ箱へ移動できません", detail: reason.message)
+            }
         }
     }
 
@@ -414,7 +446,11 @@ final class ScanViewModel {
     func confirmTrash(_ candidate: TrashCandidate) async {
         pendingTrash = nil
         isTrashDialogPresented = false
-        guard let session, session.scanID == candidate.scanID, !isTrashing else { return }
+        guard let session, session.scanID == candidate.scanID else {
+            message = UserMessage(title: "ゴミ箱へ移動しませんでした", detail: "確認している間に結果が新しいスキャンに置き換わりました。項目を選び直してください。")
+            return
+        }
+        guard !isTrashing else { return }
         isTrashing = true
         let actions = self.actions
         let outcome = await Task.detached(priority: .userInitiated) {
@@ -428,8 +464,8 @@ final class ScanViewModel {
         if actions.isMoved(candidate.itemID, in: session) {
             movedItems.insert(candidate.itemID)
             // 空き容量は OS から取り直す。移動したサイズを解放量として扱わない。
-            capacity = VolumeCapacity.fetch(forPath: session.scope.rootPath)
-            volumes = VolumeEntry.mountedVolumes()
+            refreshCapacity(for: session)
+            loadVolumes()
         }
         switch outcome {
         case .success(let moved) where !moved.isVerified:
@@ -482,10 +518,13 @@ final class ScanViewModel {
     /// 表示中の範囲を問い合わせ直す。実行中の問い合わせがあれば、終わってから一度だけやり直す。
     func refresh() {
         guard let session, let query = currentQuery else { return }
-        if refreshTask != nil {
+        if refreshTask != nil, refreshScanID == query.scanID {
             refreshPending = true
             return
         }
+        // 旧スキャンの問い合わせが残っていても待たない（その応答は scanID の照合で捨てる）
+        refreshPending = false
+        refreshScanID = query.scanID
         let store = session.store
         let actions = self.actions
         refreshTask = Task { [weak self] in
@@ -493,6 +532,7 @@ final class ScanViewModel {
                 ScanViewModel.run(query, store: store, session: session, actions: actions)
             }.value
             guard let self else { return }
+            guard self.refreshScanID == query.scanID else { return }
             self.refreshTask = nil
             // 旧スキャンの応答は捨てる。条件が変わっていても、一致する部分だけは表示に使える
             if self.session?.scanID == query.scanID {

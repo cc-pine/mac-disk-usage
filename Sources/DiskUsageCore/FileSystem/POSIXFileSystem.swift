@@ -32,6 +32,14 @@ public struct POSIXFileSystem: FileSystemProvider {
     }
 
     public func listDirectory(atPath path: String, expectedIdentity: FileIdentity?) -> Result<DirectoryListing, FileSystemError> {
+        listDirectory(atPath: path, expectedIdentity: expectedIdentity, isCancelled: { false })
+    }
+
+    public func listDirectory(
+        atPath path: String,
+        expectedIdentity: FileIdentity?,
+        isCancelled: () -> Bool
+    ) -> Result<DirectoryListing, FileSystemError> {
         let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else {
             let code = errno
@@ -59,6 +67,10 @@ public struct POSIXFileSystem: FileSystemProvider {
 
         var entries: [DirectoryEntry] = []
         while true {
+            // 巨大なフォルダでもキャンセルを待たせない（それまでの項目を返し、走査側が中断を記録する）
+            if entries.count % 1024 == 1023, isCancelled() {
+                break
+            }
             errno = 0
             guard let entry = readdir(dir) else {
                 let code = errno
@@ -124,6 +136,15 @@ public struct POSIXFileSystem: FileSystemProvider {
         }
     }
 
+    private static let strerrorLock = NSLock()
+
+    /// strerror は再入可能ではないため、走査スレッドと UI 側の確認が同時に呼ばないようにする。
+    static func systemMessage(_ code: Int32) -> String {
+        strerrorLock.lock()
+        defer { strerrorLock.unlock() }
+        return String(cString: strerror(code))
+    }
+
     /// errno を利用者向けの短い日本語の説明に変える。調査用に errno の番号を末尾に残す。
     static func error(_ code: Int32) -> FileSystemError {
         func message(_ text: String) -> String {
@@ -146,7 +167,7 @@ public struct POSIXFileSystem: FileSystemProvider {
         case ETIMEDOUT:
             return FileSystemError(kind: .other, code: code, message: message("応答がないため読み取れませんでした"))
         default:
-            return FileSystemError(kind: .other, code: code, message: message("読み取りに失敗しました: \(String(cString: strerror(code)))"))
+            return FileSystemError(kind: .other, code: code, message: message("読み取りに失敗しました: \(systemMessage(code))"))
         }
     }
 

@@ -114,10 +114,26 @@ public protocol FileSystemProvider: Sendable {
     /// 途中の経路の置き換えに影響されないようにする。
     func listDirectory(atPath path: String, expectedIdentity: FileIdentity?) -> Result<DirectoryListing, FileSystemError>
 
+    /// キャンセルを途中で確かめながら列挙する。キャンセルされたら、それまでの項目を返して打ち切る。
+    /// 巨大なフォルダでもキャンセルが列挙の終わりまで待たされないようにするため。
+    func listDirectory(
+        atPath path: String,
+        expectedIdentity: FileIdentity?,
+        isCancelled: () -> Bool
+    ) -> Result<DirectoryListing, FileSystemError>
+
     /// 走査スレッドの開始時に一度呼ぶ。クラウド項目の取得を抑止する設定などを行う。
     func prepareScanningThread()
 }
 
 extension FileSystemProvider {
     public func prepareScanningThread() {}
+
+    public func listDirectory(
+        atPath path: String,
+        expectedIdentity: FileIdentity?,
+        isCancelled: () -> Bool
+    ) -> Result<DirectoryListing, FileSystemError> {
+        listDirectory(atPath: path, expectedIdentity: expectedIdentity)
+    }
 }

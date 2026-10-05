@@ -99,7 +99,7 @@ public struct FileSystemScanner: Sendable {
                 return .cancelled
             }
             let listing: DirectoryListing
-            switch provider.listDirectory(atPath: directory.path, expectedIdentity: directory.identity) {
+            switch provider.listDirectory(atPath: directory.path, expectedIdentity: directory.identity, isCancelled: isCancelled) {
             case .success(let result):
                 listing = result
             case .failure(let error):
