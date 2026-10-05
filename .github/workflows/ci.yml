@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+
+jobs:
+  macos:
+    # イメージ更新で Xcode / Swift の版が予告なく変わらないよう固定する
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchain
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+        env:
+          # 起動ディスクの範囲・パッケージ判定・実際のゴミ箱移動を確かめる結合テストを有効にする
+          MDU_INTEGRATION: "1"
+      - name: Benchmark (1M synthetic files)
+        run: |
+          set -o pipefail
+          MDU_BENCHMARK=1 swift test -c release --filter BenchmarkTests 2>&1 | tee bench.log
+          # 省略されたまま成功扱いにならないよう、計測値が出たことを確かめる
+          grep -q '^\[benchmark\] files=' bench.log
+          grep '^\[benchmark\]' bench.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Build app bundle
+        run: scripts/make-app.sh
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # tools-version の下限と、ローカル開発で使う版の両方で確認する
+        swift: ["6.0", "6.3"]
+    container: swift:${{ matrix.swift }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test
+        run: swift test
