@@ -7,7 +7,9 @@ on:
 
 jobs:
   macos:
-    runs-on: macos-latest
+    # イメージ更新で Xcode / Swift の版が予告なく変わらないよう固定する
+    runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - name: Toolchain
@@ -22,12 +24,16 @@ jobs:
       - name: Benchmark (1M synthetic files)
         run: |
           set -o pipefail
-          MDU_BENCHMARK=1 swift test -c release --filter BenchmarkTests 2>&1 | grep -E "benchmark|error|passed|failed"
+          MDU_BENCHMARK=1 swift test -c release --filter BenchmarkTests 2>&1 | tee bench.log
+          # 省略されたまま成功扱いにならないよう、計測値が出たことを確かめる
+          grep -q '^\[benchmark\] files=' bench.log
+          grep '^\[benchmark\]' bench.log >> "$GITHUB_STEP_SUMMARY"
       - name: Build app bundle
         run: scripts/make-app.sh
 
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
