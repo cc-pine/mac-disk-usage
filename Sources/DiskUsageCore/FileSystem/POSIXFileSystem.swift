@@ -124,18 +124,29 @@ public struct POSIXFileSystem: FileSystemProvider {
         }
     }
 
+    /// errno を利用者向けの短い日本語の説明に変える。調査用に errno の番号を末尾に残す。
     static func error(_ code: Int32) -> FileSystemError {
-        let message = String(cString: strerror(code))
+        func message(_ text: String) -> String {
+            "\(text)（errno \(code)）"
+        }
         switch code {
         case EACCES, EPERM:
-            return FileSystemError(kind: .permissionDenied, code: code, message: message)
-        case ENOENT, ENOTDIR:
-            return FileSystemError(kind: .notFound, code: code, message: message)
+            return FileSystemError(kind: .permissionDenied, code: code, message: message("アクセスが拒否されました"))
+        case ENOENT:
+            return FileSystemError(kind: .notFound, code: code, message: message("見つかりません。走査中に移動・削除された可能性があります"))
+        case ENOTDIR:
+            return FileSystemError(kind: .notFound, code: code, message: message("フォルダではなくなりました"))
         case EDEADLK:
             // dataless 項目の取得を抑止した結果
             return FileSystemError(kind: .cloudOnly, code: code, message: "クラウド上にだけある項目です")
+        case ENAMETOOLONG:
+            return FileSystemError(kind: .other, code: code, message: message("パスが長すぎるため読み取れません"))
+        case EIO:
+            return FileSystemError(kind: .other, code: code, message: message("ディスクの読み取りでエラーが起きました"))
+        case ETIMEDOUT:
+            return FileSystemError(kind: .other, code: code, message: message("応答がないため読み取れませんでした"))
         default:
-            return FileSystemError(kind: .other, code: code, message: message)
+            return FileSystemError(kind: .other, code: code, message: message("読み取りに失敗しました: \(String(cString: strerror(code)))"))
         }
     }
 

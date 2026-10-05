@@ -23,7 +23,7 @@ final class DisplayTextTests: XCTestCase {
         XCTAssertEqual(DisplayText.size(of: item(kind: .file, allocated: 0)), "0 bytes")
         XCTAssertEqual(DisplayText.size(of: item(kind: .symbolicLink)), "—")
         XCTAssertEqual(DisplayText.size(of: item(kind: .directory, access: .denied, traversal: .partial)), "不明")
-        XCTAssertEqual(DisplayText.size(of: item(kind: .directory, traversal: .excluded, exclusion: .otherVolume)), "対象外")
+        XCTAssertEqual(DisplayText.size(of: item(kind: .directory, traversal: .excluded, exclusion: .otherVolume)), "除外")
     }
 
     func testPartialDirectoryIsMarked() {
@@ -37,7 +37,7 @@ final class DisplayTextTests: XCTestCase {
 
     func testExcludedIsNotDescribedAsReadable() {
         let excluded = item(kind: .directory, traversal: .excluded, exclusion: .duplicatePath)
-        XCTAssertEqual(DisplayText.access(of: excluded), "未読込・同じフォルダへの別経路のため対象外")
+        XCTAssertEqual(DisplayText.access(of: excluded), "除外（同じフォルダへの別経路）")
         XCTAssertEqual(DisplayText.access(of: item(kind: .directory, access: .denied, traversal: .partial)), "アクセス拒否・一部のみ走査")
     }
 

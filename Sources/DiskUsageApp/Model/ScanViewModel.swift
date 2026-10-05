@@ -102,24 +102,43 @@ final class ScanViewModel {
         return !state.isTerminal
     }
 
+    /// 走査中に同じ対象を選んだままのときは、黙ってやり直さないよう開始できなくする。
     var canStartScan: Bool {
-        selectedTarget != nil && !isPreparingScan && !isTrashing
+        guard let selectedTarget, !isPreparingScan, !isTrashing else { return false }
+        return !(isScanActive && selectedTarget == scannedTarget)
     }
 
     var canRescan: Bool {
         scannedTarget != nil && !isScanActive && !isPreparingScan && !isTrashing
     }
 
-    // MARK: - 問い合わせ結果（現在の条件と一致するものだけ）
+    // MARK: - 問い合わせ結果
 
+    /// 表示中の一覧・Treemap が、現在の条件の結果をまだ受け取っていないか。
+    /// 読み込み中も前の結果を表示したまま（表やフォーカスを壊さず）、この値で読み込み中を示す。
+    var isLoadingView: Bool {
+        guard let query = currentQuery else { return false }
+        guard let snapshot else { return true }
+        return snapshot.query.directoryID != query.directoryID
+            || snapshot.query.childrenOffset != query.childrenOffset
+            || snapshot.query.largeFilesOffset != query.largeFilesOffset
+    }
+
+    /// 現在のフォルダ。問い合わせ結果が現在のフォルダと一致する場合だけ返す。
     var directory: ScanItem? {
         guard let snapshot, snapshot.query.directoryID == directoryID else { return nil }
         return snapshot.directory
     }
 
+    /// 現在のフォルダのパンくず。親への移動の判定に使うため、一致する場合だけ返す。
     var breadcrumbs: [ScanItem] {
         guard let snapshot, snapshot.query.directoryID == directoryID else { return [] }
         return snapshot.breadcrumbs
+    }
+
+    /// 表示用のパンくず。読み込み中は前のフォルダのものを表示し続ける。
+    var displayedBreadcrumbs: [ScanItem] {
+        snapshot?.breadcrumbs ?? []
     }
 
     var scanRoot: ScanItem? {
@@ -127,47 +146,82 @@ final class ScanViewModel {
     }
 
     var children: ItemPage? {
-        guard let snapshot, snapshot.query.directoryID == directoryID, snapshot.query.childrenOffset == childrenOffset else { return nil }
-        return snapshot.children
+        snapshot?.children
     }
 
     var treemap: TreemapSnapshot? {
-        guard let snapshot, snapshot.query.directoryID == directoryID else { return nil }
-        return snapshot.treemap
+        snapshot?.treemap
     }
 
     var largeFiles: ItemPage? {
-        guard let snapshot, snapshot.query.largeFilesOffset == largeFilesOffset else { return nil }
-        return snapshot.largeFiles
+        snapshot?.largeFiles
     }
 
+    /// 大きなファイル一覧の各行の親フォルダのパス
+    var largeFileFolders: [ItemID: String] {
+        snapshot?.largeFileFolders ?? [:]
+    }
+
+    /// 選択項目。問い合わせ結果が届くまでは、表示中の行のデータを使って詳細パネルを空にしない。
     var selectedItem: ScanItem? {
-        guard let snapshot, let selectionID, snapshot.query.selectionID == selectionID else { return nil }
-        return snapshot.selectedItem
+        guard let selectionID else { return nil }
+        if let snapshot, snapshot.query.selectionID == selectionID {
+            return snapshot.selectedItem
+        }
+        let visible = (children?.items ?? []) + (largeFiles?.items ?? []) + (treemap?.items ?? [])
+        return visible.first { $0.id == selectionID }
     }
 
     var selectedPath: String? {
-        guard selectedItem != nil else { return nil }
-        return snapshot?.selectedPath
+        guard let snapshot, let selectionID, snapshot.query.selectionID == selectionID else { return nil }
+        return snapshot.selectedPath
     }
 
-    /// ゴミ箱ボタンを有効にするか。理由は詳細パネルに表示する。
+    /// ゴミ箱ボタンを有効にするか。理由は詳細パネルに表示する。最新の判定が届くまでは nil。
     var trashAvailability: Result<TrashCandidate, TrashBlockReason>? {
-        guard !isTrashing, selectedItem != nil else { return nil }
-        return snapshot?.trashAvailability
+        guard !isTrashing, let snapshot, let selectionID, snapshot.query.selectionID == selectionID else { return nil }
+        return snapshot.trashAvailability
     }
 
     // MARK: - 開始・キャンセル・再スキャン
 
+    /// 選んだフォルダ。サイドバーで別の対象を選んでも一覧から消さない。
+    private(set) var chosenFolder: URL?
+    /// 走査中に別の対象を選んで開始しようとしたときの確認
+    var isSwitchConfirmationPresented = false
+    @ObservationIgnored private var isLoadingVolumes = false
+
+    /// ボリュームの容量問い合わせは応答しないネットワークマウントなどで待つことがあるため、
+    /// MainActor の外で行う。
     func loadVolumes() {
-        volumes = VolumeEntry.mountedVolumes()
-        if selectedTarget == nil {
-            selectedTarget = volumes.first.map(ScanTarget.volume)
+        guard !isLoadingVolumes else { return }
+        isLoadingVolumes = true
+        Task { [weak self] in
+            let volumes = await Task.detached(priority: .userInitiated) {
+                VolumeEntry.mountedVolumes()
+            }.value
+            guard let self else { return }
+            self.isLoadingVolumes = false
+            self.volumes = volumes
+            if self.selectedTarget == nil {
+                self.selectedTarget = volumes.first.map(ScanTarget.volume)
+            }
         }
     }
 
     func chooseFolder(_ url: URL) {
+        chosenFolder = url
         selectedTarget = .folder(url)
+    }
+
+    /// 開始操作。走査中に別の対象を選んでいる場合は、中止してよいかを確かめる。
+    func requestStartScan() {
+        guard canStartScan else { return }
+        if isScanActive {
+            isSwitchConfirmationPresented = true
+        } else {
+            Task { await startScan() }
+        }
     }
 
     /// 対象を走査する。実行中のスキャンがあれば、キャンセル完了を待ってから始める。
@@ -236,32 +290,37 @@ final class ScanViewModel {
 
     // MARK: - ナビゲーション
 
-    func open(_ id: ItemID) {
-        guard let session, let item = session.store.item(id), item.kind == .directory else { return }
-        directoryID = id
+    /// フォルダを開く。項目は表示中の行やパンくずから受け取り、MainActor でストアを引かない。
+    func open(_ item: ScanItem) {
+        guard item.kind == .directory, item.traversalState != .excluded else { return }
+        directoryID = item.id
         childrenOffset = 0
         refresh()
     }
 
     /// ビューの描画中に評価されるため、ストアのロックを取らず問い合わせ結果のパンくずから判定する。
+    /// 大きなファイル一覧では表示中のフォルダが見えないため、親への移動はしない。
     var canGoUp: Bool {
-        breadcrumbs.count > 1
+        tab != .largeFiles && breadcrumbs.count > 1
     }
 
+    /// 親フォルダへ移り、元のフォルダを選択したうえで、その行が見えるページを表示する。
     func goUp() {
         // パンくずは現在のフォルダと一致する場合だけ返るので、表示より古い親へ移ることはない
         let trail = breadcrumbs
-        guard trail.count > 1, let current = directoryID else { return }
-        directoryID = trail[trail.count - 2].id
+        guard canGoUp, let current = directoryID, let session else { return }
+        let parent = trail[trail.count - 2].id
+        directoryID = parent
         childrenOffset = 0
         selectionID = current
         refresh()
+        reveal(current, in: parent, session: session)
     }
 
     /// 一覧の行やタイルを確定操作したとき。フォルダなら開き、それ以外は選択する。
     func activate(_ item: ScanItem) {
         if item.kind == .directory, item.traversalState != .excluded {
-            open(item.id)
+            open(item)
         } else {
             selectionID = item.id
         }
@@ -269,8 +328,18 @@ final class ScanViewModel {
 
     /// 選択中の項目を開く（キーボード操作用）。
     func openSelection() {
-        guard let session, let selectionID, let item = session.store.item(selectionID) else { return }
+        guard let item = selectedItem else { return }
         activate(item)
+    }
+
+    /// 大きなファイル一覧で選んだファイルを、一覧タブの親フォルダ内で表示する。
+    func showSelectionInFolder() {
+        guard let session, let item = selectedItem, let parent = item.parentID else { return }
+        tab = .list
+        directoryID = parent
+        childrenOffset = 0
+        refresh()
+        reveal(item.id, in: parent, session: session)
     }
 
     func showChildrenPage(offset: Int) {
@@ -283,11 +352,11 @@ final class ScanViewModel {
         refresh()
     }
 
-    /// Treemap の「その他」から一覧へ移り、まとめられた項目の先頭を表示・選択する。
+    /// Treemap の「その他」から一覧へ移り、まとめられた項目の先頭を最初の行に表示して選択する。
     func showOthersInList(firstIndex: Int) {
         guard let session, let directoryID else { return }
         tab = .list
-        childrenOffset = (firstIndex / Self.pageSize) * Self.pageSize
+        childrenOffset = max(0, firstIndex)
         refresh()
         let store = session.store
         Task { [weak self] in
@@ -296,6 +365,19 @@ final class ScanViewModel {
             }.value
             guard let self, self.session === session, self.directoryID == directoryID, let first else { return }
             self.selectionID = first
+        }
+    }
+
+    /// 子の並び順での位置を調べ、その行が先頭に来るページを表示する（表はスクロール位置を指定できないため）。
+    private func reveal(_ child: ItemID, in parent: ItemID, session: ScanSession) {
+        let store = session.store
+        Task { [weak self] in
+            let position = await Task.detached(priority: .userInitiated) {
+                store.position(of: child, in: parent)
+            }.value
+            guard let self, self.session === session, self.directoryID == parent, let position else { return }
+            self.childrenOffset = position
+            self.refresh()
         }
     }
 
@@ -382,6 +464,7 @@ final class ScanViewModel {
         let children: ItemPage
         let treemap: TreemapSnapshot
         let largeFiles: ItemPage
+        let largeFileFolders: [ItemID: String]
         let selectedItem: ScanItem?
         let selectedPath: String?
         let trashAvailability: Result<TrashCandidate, TrashBlockReason>?
@@ -431,6 +514,12 @@ final class ScanViewModel {
         let children = store.children(of: query.directoryID, offset: query.childrenOffset, limit: pageSize)
         let treemapData = store.childrenForTreemap(of: query.directoryID, limit: treemapLimit)
         let largeFiles = store.largestFiles(offset: query.largeFilesOffset, limit: pageSize)
+        var largeFileFolders: [ItemID: String] = [:]
+        for item in largeFiles.items {
+            if let parent = item.parentID, let path = store.path(of: parent) {
+                largeFileFolders[item.id] = path
+            }
+        }
         let selected = query.selectionID.flatMap { store.item($0) }
         let selectedPath = query.selectionID.flatMap { store.path(of: $0) }
         let trashAvailability = query.selectionID.map { actions.candidate(for: $0, in: session) }
@@ -446,6 +535,7 @@ final class ScanViewModel {
                 remainderBytes: treemapData.remainderKnownBytes
             ),
             largeFiles: largeFiles,
+            largeFileFolders: largeFileFolders,
             selectedItem: selected,
             selectedPath: selectedPath,
             trashAvailability: trashAvailability

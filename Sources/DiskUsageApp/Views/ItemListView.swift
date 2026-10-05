@@ -8,17 +8,17 @@ struct ItemListView: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
-            if let page = model.children {
-                if page.totalCount == 0 {
-                    ContentUnavailableView(emptyTitle, systemImage: "folder", description: Text(emptyDetail))
-                } else {
-                    ItemTable(items: page.items, total: totalKnownBytes, moved: model.movedItems, selection: $model.selectionID) { item in
-                        model.activate(item)
-                    }
-                    PageBar(page: page, pageSize: ScanViewModel.pageSize) { offset in
-                        model.showChildrenPage(offset: offset)
-                    }
+            // 読み込み中も前の表を表示したままにし、表を作り直して選択やキーボードの焦点を失わない
+            if let page = model.children, page.totalCount > 0 || model.isLoadingView {
+                ItemTable(items: page.items, total: totalKnownBytes, moved: model.movedItems, selection: $model.selectionID) { item in
+                    model.activate(item)
                 }
+                .opacity(model.isLoadingView ? 0.6 : 1)
+                PageBar(page: page, pageSize: ScanViewModel.pageSize) { offset in
+                    model.showChildrenPage(offset: offset)
+                }
+            } else if let directory = model.directory {
+                ContentUnavailableView(emptyTitle(directory), systemImage: "folder", description: Text(directory.errorDescription ?? ""))
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -30,18 +30,20 @@ struct ItemListView: View {
         model.directory?.displayAllocatedBytes ?? 0
     }
 
-    private var emptyTitle: String {
-        guard let directory = model.directory else { return "項目がありません" }
+    private func emptyTitle(_ directory: ScanItem) -> String {
         switch directory.accessState {
         case .denied: return "このフォルダは読み取れませんでした"
         case .error: return "このフォルダの読み取り中にエラーが起きました"
         case .notScanned: return "このフォルダは走査していません"
-        case .readable: return directory.traversalState == .pending ? "走査中です" : "空のフォルダです"
+        case .readable:
+            switch directory.traversalState {
+            case .pending: return "走査中です"
+            case .partial where directory.sizeSummary.hasUnvisitedDescendants:
+                return "走査を中止したため、このフォルダの中身は取得していません"
+            case .excluded: return "このフォルダは除外したため走査していません"
+            default: return "空のフォルダです"
+            }
         }
-    }
-
-    private var emptyDetail: String {
-        model.directory?.errorDescription ?? ""
     }
 }
 

@@ -21,7 +21,8 @@ struct LargeFilesView: View {
                         moved: model.movedItems,
                         selection: $model.selectionID,
                         showsPath: { item in
-                            item.id == model.selectionID ? model.selectedPath : nil
+                            // 同名のファイルを見分けられるよう、すべての行に置き場所を示す
+                            model.largeFileFolders[item.id]
                         }
                     ) { item in
                         model.selectionID = item.id

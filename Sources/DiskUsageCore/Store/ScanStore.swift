@@ -410,6 +410,11 @@ public final class ScanStore: @unchecked Sendable {
         return sorted
     }
 
+    /// `child` が `parent` の直下でサイズ順の何番目か（0 始まり）。直下にない場合は nil。
+    public func position(of child: ItemID, in parent: ItemID) -> Int? {
+        sortedChildren(parent.index)?.firstIndex(of: child.rawValue)
+    }
+
     /// Treemap 用に、サイズ順の上位 `limit` 件と、残りのうちサイズが 0 より大きい項目の件数・合計を同じ版で返す。
     public func childrenForTreemap(of id: ItemID, limit: Int) -> (page: ItemPage, remainderCount: Int, remainderKnownBytes: Int64) {
         let sorted = sortedChildren(id.index)

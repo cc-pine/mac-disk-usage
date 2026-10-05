@@ -41,6 +41,17 @@ struct ContentView: View {
             Alert(title: Text(message.title), message: Text(message.detail), dismissButton: .default(Text("OK")))
         }
         .confirmationDialog(
+            "実行中のスキャンを中止して、選んだ対象をスキャンしますか？",
+            isPresented: $model.isSwitchConfirmationPresented
+        ) {
+            Button("中止してスキャン") {
+                Task { await model.startScan() }
+            }
+            Button("続ける", role: .cancel) {}
+        } message: {
+            Text("ここまでの結果は破棄され、新しい対象の結果に置き換わります。")
+        }
+        .confirmationDialog(
             "ゴミ箱へ移動しますか？",
             isPresented: $model.isTrashDialogPresented,
             presenting: model.pendingTrash
@@ -61,7 +72,7 @@ struct ContentView: View {
         """
         名前: \(candidate.name)
         場所: \(candidate.path)
-        取得済みサイズ: \(ByteFormatting.string(candidate.allocatedSize))
+        割り当て済みサイズ: \(ByteFormatting.string(candidate.allocatedSize))
 
         ゴミ箱へ移すだけで、完全には削除しません。空き容量がこのサイズだけ増えるとは限りません。
         """

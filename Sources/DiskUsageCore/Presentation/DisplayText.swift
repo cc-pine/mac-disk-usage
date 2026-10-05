@@ -7,7 +7,7 @@ public enum DisplayText {
             return "—"
         }
         if item.traversalState == .excluded {
-            return "対象外"
+            return "除外"
         }
         guard let bytes = item.displayAllocatedBytes else {
             return "不明"
@@ -21,7 +21,7 @@ public enum DisplayText {
             return "—（集計対象外）"
         }
         if item.traversalState == .excluded {
-            return "対象外"
+            return "除外"
         }
         guard let bytes = item.displayLogicalBytes else {
             return "不明"
@@ -51,8 +51,8 @@ public enum DisplayText {
 
     public static func access(of item: ScanItem) -> String {
         if let reason = item.exclusionReason {
-            // 範囲外の項目は中身を読んでいないため「読み取り可」と示さない
-            return "未読込・\(exclusion(reason))"
+            // 除外した項目は中身を読んでいないため「読み取り可」と示さない
+            return "除外（\(exclusion(reason))）"
         }
         var parts: [String] = []
         switch item.accessState {
@@ -68,7 +68,7 @@ public enum DisplayText {
             case .pending: parts.append("走査中")
             case .partial: parts.append("一部のみ走査")
             case .complete: break
-            case .excluded: parts.append("範囲外")
+            case .excluded: parts.append("除外")
             }
         }
         return parts.joined(separator: "・")
@@ -76,9 +76,9 @@ public enum DisplayText {
 
     public static func exclusion(_ reason: ExclusionReason) -> String {
         switch reason {
-        case .otherVolume: return "別のボリュームのため対象外"
-        case .duplicatePath: return "同じフォルダへの別経路のため対象外"
-        case .scopeRule: return "走査範囲の規則により対象外"
+        case .otherVolume: return "別のボリューム"
+        case .duplicatePath: return "同じフォルダへの別経路"
+        case .scopeRule: return "起動ディスクの範囲規則"
         }
     }
 

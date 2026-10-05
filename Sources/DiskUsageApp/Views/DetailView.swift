@@ -60,6 +60,15 @@ struct DetailView: View {
                     }
                     .disabled(!model.canRevealSelection)
 
+                    if model.tab != .list, item.parentID != nil {
+                        Button {
+                            model.showSelectionInFolder()
+                        } label: {
+                            Label("一覧のフォルダ内で表示", systemImage: "list.bullet.indent")
+                        }
+                        .help("この項目を含むフォルダを一覧で開き、項目を選択します（⌘L）")
+                    }
+
                     TrashButton()
                 }
             }

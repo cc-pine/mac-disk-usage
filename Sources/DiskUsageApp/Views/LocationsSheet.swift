@@ -80,7 +80,7 @@ struct LocationsSheet: View {
     }
 
     private var title: String {
-        category == .problems ? "情報を取得できなかった場所" : "範囲外とした場所"
+        category == .problems ? "情報を取得できなかった場所" : "除外した場所（除外領域）"
     }
 
     private var explanation: String {
