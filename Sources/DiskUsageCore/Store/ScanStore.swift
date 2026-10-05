@@ -334,7 +334,7 @@ public final class ScanStore: @unchecked Sendable {
         return ids
     }
 
-    /// Treemap 用に、サイズ順の上位 `limit` 件と、残りの件数・既知サイズ合計を同じ版で返す。
+    /// Treemap 用に、サイズ順の上位 `limit` 件と、残りのうちサイズが 0 より大きい項目の件数・合計を同じ版で返す。
     public func childrenForTreemap(of id: ItemID, limit: Int) -> (page: ItemPage, remainderCount: Int, remainderKnownBytes: Int64) {
         lock.lock()
         defer { lock.unlock() }
@@ -343,11 +343,15 @@ public final class ScanStore: @unchecked Sendable {
         }
         let sorted = sortedChildren(id.index)
         let page = page(of: sorted, offset: 0, limit: limit, isProvisional: false)
-        let rest = sorted.dropFirst(page.items.count)
-        let restBytes = rest.reduce(Int64(0)) { sum, child in
-            sum &+ max(0, sortKey(Int(child)) ?? 0)
+        var restCount = 0
+        var restBytes: Int64 = 0
+        for child in sorted.dropFirst(page.items.count) {
+            // サイズ順なので、0・不明が現れたら以降に面積を持つ項目はない
+            guard let bytes = sortKey(Int(child)), bytes > 0 else { break }
+            restCount += 1
+            restBytes = TreemapLayout.saturatingAdd(restBytes, bytes)
         }
-        return (page, rest.count, restBytes)
+        return (page, restCount, restBytes)
     }
 
     /// スキャン全体の通常ファイルをサイズ順にページ取得する。
