@@ -23,28 +23,6 @@ public struct ItemPage: Sendable, Equatable {
 /// 書き込みはスキャンの保存処理だけが行い、UI からは問い合わせだけを行う。
 /// 内部状態は1つのロックで守り、ノードごとの監視オブジェクトや全ツリーの複製を作らない。
 public final class ScanStore: @unchecked Sendable {
-    struct Node {
-        var parent: Int32
-        var name: String
-        var kind: ItemKind
-        var isPackage: Bool
-        var logicalSize: Int64?
-        var allocatedSize: Int64?
-        var summary: SizeSummary
-        var modifiedDate: Date?
-        var createdDate: Date?
-        var accessState: AccessState
-        var traversalState: TraversalState
-        var fileIdentity: FileIdentity?
-        var exclusionReason: ExclusionReason?
-        var errorDescription: String?
-        /// 未完了の子ディレクトリ数
-        var pendingChildDirectories: Int32 = 0
-        var listingDone = false
-        /// 配下に列挙エラー・キャンセルがあった
-        var subtreeIncomplete = false
-    }
-
     /// 1ノードあたりの固定メモリ量（名前の文字列本体などヒープ分は含まない）。計測用。
     static var nodeStride: Int { MemoryLayout<Node>.stride }
 
@@ -59,6 +37,8 @@ public final class ScanStore: @unchecked Sendable {
     private var publishedRevision = 0
     private var publishedCounts = ScanCounts()
     private var nodes: [Node] = []
+    /// エラー説明。大半の項目は持たないため疎な辞書にする
+    private var errorDescriptions: [Int32: String] = [:]
     private var children: [[Int32]] = []
     private var counts = ScanCounts()
     private var revision = 0
@@ -66,6 +46,7 @@ public final class ScanStore: @unchecked Sendable {
     private var topFiles: MinHeap
     private var fileIDs: [Int32] = []
     private var sortedFileIndex: [Int32]?
+    private var isPreparingFileIndex = false
     private var provisionalCache: (revision: Int, ids: [Int32])?
     private var childrenCache: (directory: Int, revision: Int, ids: [Int32])?
 
@@ -183,9 +164,11 @@ public final class ScanStore: @unchecked Sendable {
             traversalState: traversal,
             fileIdentity: item.fileIdentity,
             exclusionReason: item.exclusionReason,
-            errorDescription: item.errorDescription,
             listingDone: listingDone
         ))
+        if let message = item.errorDescription {
+            errorDescriptions[Int32(index)] = message
+        }
         children.append([])
         if parent >= 0 {
             children[Int(parent)].append(Int32(index))
@@ -228,11 +211,7 @@ public final class ScanStore: @unchecked Sendable {
         var cursor = Int32(start)
         while cursor >= 0 {
             let i = Int(cursor)
-            nodes[i].summary.knownLogicalBytes &+= delta.knownLogicalBytes
-            nodes[i].summary.knownAllocatedBytes &+= delta.knownAllocatedBytes
-            nodes[i].summary.unknownLogicalItems += delta.unknownLogicalItems
-            nodes[i].summary.unknownAllocatedItems += delta.unknownAllocatedItems
-            nodes[i].summary.unreadableLocations += delta.unreadableLocations
+            nodes[i].add(delta)
             cursor = nodes[i].parent
         }
     }
@@ -247,7 +226,7 @@ public final class ScanStore: @unchecked Sendable {
         case .failed(let access, let message):
             let wasReadable = nodes[index].accessState == .readable
             nodes[index].accessState = access
-            nodes[index].errorDescription = message
+            errorDescriptions[Int32(index)] = message
             nodes[index].subtreeIncomplete = true
             if wasReadable {
                 counts.problemItems += 1
@@ -258,7 +237,7 @@ public final class ScanStore: @unchecked Sendable {
             nodes[index].subtreeIncomplete = true
             markUnvisited(index)
             if let message {
-                nodes[index].errorDescription = message
+                errorDescriptions[Int32(index)] = message
                 if nodes[index].accessState == .readable {
                     nodes[index].accessState = .error
                     counts.problemItems += 1
@@ -271,8 +250,8 @@ public final class ScanStore: @unchecked Sendable {
     /// 未走査の配下があることを自身と祖先に記録する。
     private func markUnvisited(_ index: Int) {
         var cursor = Int32(index)
-        while cursor >= 0, !nodes[Int(cursor)].summary.hasUnvisitedDescendants {
-            nodes[Int(cursor)].summary.hasUnvisitedDescendants = true
+        while cursor >= 0, !nodes[Int(cursor)].hasUnvisitedDescendants {
+            nodes[Int(cursor)].hasUnvisitedDescendants = true
             cursor = nodes[Int(cursor)].parent
         }
     }
@@ -379,8 +358,9 @@ public final class ScanStore: @unchecked Sendable {
     /// 確定後は全件の索引を一度だけ作り、以降の問い合わせで再ソートしない。
     public func largestFiles(offset: Int = 0, limit: Int = 100) -> ItemPage {
         lock.lock()
-        if isFinalized, sortedFileIndex == nil {
-            // 全件の並べ替えはロックの外で行い、他の問い合わせを待たせない
+        if isFinalized, sortedFileIndex == nil, !isPreparingFileIndex {
+            // 誰も索引を作っていなければ自分で作る。並べ替えはロックの外で行い、他の問い合わせを待たせない。
+            // 作成中なら待たずに暫定の上位を返す（終端イベントは索引の完成後に届く）。
             lock.unlock()
             prepareFileIndex()
             lock.lock()
@@ -401,10 +381,11 @@ public final class ScanStore: @unchecked Sendable {
     /// その間も UI の問い合わせを待たせない。
     public func prepareFileIndex() {
         lock.lock()
-        guard isFinalized, sortedFileIndex == nil else {
+        guard isFinalized, sortedFileIndex == nil, !isPreparingFileIndex else {
             lock.unlock()
             return
         }
+        isPreparingFileIndex = true
         let snapshot = nodes
         let ids = fileIDs
         lock.unlock()
@@ -412,9 +393,8 @@ public final class ScanStore: @unchecked Sendable {
         let sorted = Self.sortBySize(ids, nodes: snapshot, rootPath: rootPath, pathTieBreak: true)
 
         lock.lock()
-        if sortedFileIndex == nil {
-            sortedFileIndex = sorted
-        }
+        sortedFileIndex = sorted
+        isPreparingFileIndex = false
         lock.unlock()
     }
 
@@ -477,7 +457,7 @@ public final class ScanStore: @unchecked Sendable {
             traversalState: node.traversalState,
             fileIdentity: node.fileIdentity,
             exclusionReason: node.exclusionReason,
-            errorDescription: node.errorDescription
+            errorDescription: errorDescriptions[Int32(index)]
         )
     }
 
@@ -499,7 +479,7 @@ public final class ScanStore: @unchecked Sendable {
             return nodes[index].allocatedSize
         case .directory:
             return ScanItem.displayBytes(
-                kind: .directory, ownSize: nil, knownTotal: nodes[index].summary.knownAllocatedBytes,
+                kind: .directory, ownSize: nil, knownTotal: nodes[index].knownAllocatedBytes,
                 accessState: nodes[index].accessState, traversalState: nodes[index].traversalState
             )
         case .symbolicLink, .other:
