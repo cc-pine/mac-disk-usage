@@ -20,6 +20,7 @@ final class RecordingTrasher: Trasher, @unchecked Sendable {
 final class ItemActionServiceTests: XCTestCase {
     private var fs: MockFileSystem!
     private var trasher: RecordingTrasher!
+    private var coordinator: ScanCoordinator!
 
     override func setUp() {
         fs = MockFileSystem()
@@ -29,19 +30,23 @@ final class ItemActionServiceTests: XCTestCase {
         fs.link("/Users/me/work/link")
         fs.dir("/Users/me/work/App.app", isPackage: true).file("/Users/me/work/App.app/inner", allocated: 1)
         fs.dir("/Users/me/Library").file("/Users/me/Library/prefs.plist", allocated: 1)
+        fs.dir("/Users/me/.Trash").file("/Users/me/.Trash/old", allocated: 1)
+        fs.dir("/Users/other").dir("/Users/other/Library").file("/Users/other/Library/x", allocated: 1)
         fs.dir("/Library").file("/Library/x", allocated: 1)
+        fs.dir("/Volumes").dir("/Volumes/Ext", device: 3).dir("/Volumes/Ext/.Trashes", device: 3)
+        fs.file("/Volumes/Ext/.Trashes/t", allocated: 1, device: 3).file("/Volumes/Ext/movie.mov", allocated: 9, device: 3)
         trasher = RecordingTrasher()
+        coordinator = ScanCoordinator(provider: fs)
     }
 
     private func completedSession(root: String) async throws -> ScanSession {
-        let coordinator = ScanCoordinator(provider: fs)
         let session = try coordinator.start(scope: ScanScope(rootPath: root, kind: .folder)!)
         _ = await session.waitUntilFinished()
         return session
     }
 
     private func service() -> ItemActionService {
-        ItemActionService(provider: fs, trasher: trasher, policy: TrashPolicy(homeDirectory: "/Users/me"))
+        ItemActionService(coordinator: coordinator, provider: fs, trasher: trasher, policy: TrashPolicy(homeDirectory: "/Users/me"))
     }
 
     private func id(_ session: ScanSession, _ path: String) -> ItemID {
@@ -92,16 +97,101 @@ final class ItemActionServiceTests: XCTestCase {
         XCTAssertEqual(service.candidate(for: id(session, "/Library/x"), in: session), .failure(.protectedLocation("/Library")))
         XCTAssertEqual(
             service.candidate(for: id(session, "/Users/me/Library/prefs.plist"), in: session),
-            .failure(.protectedLocation("/Users/me/Library"))
+            .failure(.protectedLocation("/Users/*/Library"))
         )
         XCTAssertNotNil(TrashPolicy(homeDirectory: "/Users/me").protectedRoot(containing: "/library/X"))
         XCTAssertNil(TrashPolicy(homeDirectory: "/Users/me").protectedRoot(containing: "/Users/me/LibraryX/a"))
     }
 
+    func testProtectsTrashOtherUsersLibraryAndOtherVolumeSystemAreas() async throws {
+        let session = try await completedSession(root: "/")
+        let service = service()
+        XCTAssertEqual(service.candidate(for: id(session, "/Users/me/.Trash/old"), in: session), .failure(.protectedLocation("/Users/*/.Trash")))
+        XCTAssertEqual(service.candidate(for: id(session, "/Users/other/Library/x"), in: session), .failure(.protectedLocation("/Users/*/Library")))
+
+        let volume = try await completedSession(root: "/Volumes/Ext")
+        XCTAssertEqual(
+            service.candidate(for: id(volume, "/Volumes/Ext/.Trashes/t"), in: volume),
+            .failure(.protectedLocation("/Volumes/*/.Trashes"))
+        )
+        XCTAssertNotNil(try? service.candidate(for: id(volume, "/Volumes/Ext/movie.mov"), in: volume).get(), "外付けの通常ファイルは移動できる")
+        let policy = TrashPolicy(homeDirectories: ["/Users/me", "/Volumes/Home/me"])
+        XCTAssertNotNil(policy.protectedRoot(containing: "/Volumes/Home/me/Library/a"), "ホームの実体パスも保護する")
+        XCTAssertNotNil(policy.protectedRoot(containing: "/System/Volumes/Data/Users/me/x"))
+    }
+
+    func testRejectsHardLinkedFiles() async throws {
+        let session = try await completedSession(root: "/Users/me/work")
+        var metadata = try fs.metadata(atPath: "/Users/me/work/big.mov").get()
+        metadata.linkCount = 2
+        fs.replace("/Users/me/work/big.mov", with: metadata)
+        XCTAssertEqual(service().candidate(for: id(session, "/Users/me/work/big.mov"), in: session), .failure(.multipleHardLinks))
+    }
+
+    func testOldSessionIsRejectedAfterRescanAndScanWaitsForTrash() async throws {
+        let first = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(first, "/Users/me/work/big.mov"), in: first).get()
+        let second = try await completedSession(root: "/Users/me/work")
+        XCTAssertEqual(service.moveToTrash(candidate, in: first), .failure(.blocked(.notInCurrentResult)))
+        XCTAssertEqual(service.moveToTrash(candidate, in: second), .failure(.blocked(.notInCurrentResult)))
+        XCTAssertTrue(trasher.paths.isEmpty)
+
+        // ファイル操作の間は新しいスキャンを始めない
+        XCTAssertTrue(coordinator.beginFileOperation(on: second))
+        XCTAssertThrowsError(try coordinator.start(scope: ScanScope(rootPath: "/Users/me/work", kind: .folder)!)) { error in
+            XCTAssertEqual(error as? ScanCoordinatorError, .fileOperationInProgress)
+        }
+        XCTAssertEqual(service.candidate(for: id(second, "/Users/me/work/big.mov"), in: second), .failure(.operationInProgress))
+        coordinator.endFileOperation()
+    }
+
+    func testAbortsWhenAncestorReplacedByAnotherDirectory() async throws {
+        let session = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/sub/a.bin"), in: session).get()
+        fs.replace("/Users/me/work/sub", with: FileMetadata(kind: .directory, identity: FileIdentity(device: 1, inode: 4_242)))
+        guard case .failure(.changedSinceScan) = service.moveToTrash(candidate, in: session) else {
+            return XCTFail("別のフォルダへの置換を検知して中止する")
+        }
+        XCTAssertTrue(trasher.paths.isEmpty)
+    }
+
+    func testAbortsWhenContentChanged() async throws {
+        let session = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/big.mov"), in: session).get()
+        var metadata = try fs.metadata(atPath: "/Users/me/work/big.mov").get()
+        metadata.logicalSize = 99_999
+        fs.replace("/Users/me/work/big.mov", with: metadata)
+        guard case .failure(.changedSinceScan) = service.moveToTrash(candidate, in: session) else {
+            return XCTFail("内容の更新を検知して中止する")
+        }
+    }
+
+    func testTrasherFailureIsReturnedAsIs() async throws {
+        trasher.error = TrashFailure.unsupported
+        let session = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/big.mov"), in: session).get()
+        XCTAssertEqual(service.moveToTrash(candidate, in: session), .failure(.unsupported))
+        XCTAssertFalse(coordinator.isFileOperationInProgress, "失敗後もゲートを解放する")
+    }
+
+    func testPackageAboveRootIsRecheckedBeforeMove() async throws {
+        let session = try await completedSession(root: "/Users/me/work/sub")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/sub/a.bin"), in: session).get()
+        // 確認の後で祖先がパッケージとして扱われるようになった（判定不能を含む）
+        var work = try fs.metadata(atPath: "/Users/me/work").get()
+        work.isPackageUnknown = true
+        fs.replace("/Users/me/work", with: work)
+        XCTAssertEqual(service.moveToTrash(candidate, in: session), .failure(.blocked(.insidePackage)))
+    }
+
     func testRejectsWhileScanning() async throws {
         let gate = Gate()
         fs.onList = { _ in gate.wait() }
-        let coordinator = ScanCoordinator(provider: fs)
         let session = try coordinator.start(scope: ScanScope(rootPath: "/Users/me/work", kind: .folder)!)
         XCTAssertEqual(service().candidate(for: ItemID(0), in: session), .failure(.scanNotFinished))
         session.cancel()
@@ -158,14 +248,6 @@ final class ItemActionServiceTests: XCTestCase {
         XCTAssertFalse(session.result.isStale)
         XCTAssertFalse(service.isMoved(candidate.itemID, in: session))
         XCTAssertTrue(fs.metadata(atPath: "/Users/me/work/big.mov").isSuccess, "完全削除しない")
-    }
-
-    func testCandidateFromOtherScanIsRejected() async throws {
-        let first = try await completedSession(root: "/Users/me/work")
-        let second = try await completedSession(root: "/Users/me/work")
-        let service = service()
-        let candidate = try service.candidate(for: id(first, "/Users/me/work/big.mov"), in: first).get()
-        XCTAssertEqual(service.moveToTrash(candidate, in: second), .failure(.blocked(.notInCurrentResult)))
     }
 
     func testScopeResolverTreatsRootAsStartupDisk() {

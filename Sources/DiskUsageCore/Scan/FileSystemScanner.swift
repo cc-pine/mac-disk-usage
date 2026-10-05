@@ -68,7 +68,7 @@ public struct FileSystemScanner: Sendable {
 
         emitter.emit(.item(DiscoveredItem(
             id: rootID, parentID: nil, name: scope.displayName, kind: rootMetadata.kind,
-            isPackage: rootMetadata.isPackage,
+            isPackage: rootMetadata.mayBePackage,
             modifiedDate: rootMetadata.modifiedDate, createdDate: rootMetadata.createdDate,
             fileIdentity: rootMetadata.identity
         )))
@@ -129,7 +129,7 @@ public struct FileSystemScanner: Sendable {
                     let cloudOnly = isDirectory && exclusion == nil && metadata.isDataless
                     emitter.emit(.item(DiscoveredItem(
                         id: id, parentID: directory.id, name: entry.name, kind: metadata.kind,
-                        isPackage: metadata.isPackage,
+                        isPackage: metadata.mayBePackage,
                         logicalSize: metadata.logicalSize, allocatedSize: metadata.allocatedSize,
                         modifiedDate: metadata.modifiedDate, createdDate: metadata.createdDate,
                         accessState: cloudOnly ? .notScanned : .readable,

@@ -17,7 +17,11 @@ public struct VolumeCapacity: Equatable, Sendable {
         self.fetchedAt = fetchedAt
     }
 
-    /// 総容量と空き容量の両方が分かる場合だけ使用量を返す。
+    /// 総容量と空き容量の両方が分かる場合だけ、OS が報告する「総容量 − 空き容量」を返す。
+    ///
+    /// 取得キーは `volumeTotalCapacityKey` と `volumeAvailableCapacityKey`（同じ statfs 由来）の組とし、
+    /// Finder が使う `volumeAvailableCapacityForImportantUsageKey` とは混ぜない。そのため Finder の
+    /// 表示とは差が出ることがある。APFS ではコンテナ全体の値になる。走査集計からは算出しない。
     public var usedBytes: Int64? {
         guard let totalBytes, let availableBytes, totalBytes >= availableBytes else { return nil }
         return totalBytes - availableBytes

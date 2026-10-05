@@ -9,8 +9,12 @@ public struct FileMetadata: Sendable, Equatable {
     public var createdDate: Date?
     public var identity: FileIdentity?
     public var isPackage: Bool
+    /// パッケージかどうかを判定できなかった（安全側ではパッケージとして扱う）
+    public var isPackageUnknown: Bool
     /// 内容がローカルになく、読むとクラウドから取得される項目（macOS の dataless）
     public var isDataless: Bool
+    /// ハードリンク数。取得できなければ nil
+    public var linkCount: Int?
 
     public init(
         kind: ItemKind,
@@ -20,7 +24,9 @@ public struct FileMetadata: Sendable, Equatable {
         createdDate: Date? = nil,
         identity: FileIdentity? = nil,
         isPackage: Bool = false,
-        isDataless: Bool = false
+        isPackageUnknown: Bool = false,
+        isDataless: Bool = false,
+        linkCount: Int? = 1
     ) {
         self.kind = kind
         self.logicalSize = logicalSize
@@ -29,7 +35,14 @@ public struct FileMetadata: Sendable, Equatable {
         self.createdDate = createdDate
         self.identity = identity
         self.isPackage = isPackage
+        self.isPackageUnknown = isPackageUnknown
         self.isDataless = isDataless
+        self.linkCount = linkCount
+    }
+
+    /// 移動などの判定で使う、安全側のパッケージ判定
+    public var mayBePackage: Bool {
+        isPackage || isPackageUnknown
     }
 }
 

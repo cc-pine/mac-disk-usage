@@ -91,12 +91,20 @@ public struct POSIXFileSystem: FileSystemProvider {
         metadata.modifiedDate = modifiedDate(info)
         metadata.createdDate = createdDate(info)
         metadata.isDataless = isDataless(info)
+        metadata.linkCount = Int(info.st_nlink)
         if kind == .file {
             metadata.logicalSize = Int64(info.st_size)
             metadata.allocatedSize = Int64(info.st_blocks) * 512
         }
-        if kind == .directory, !metadata.isDataless {
-            metadata.isPackage = isPackage(packagePath)
+        if kind == .directory {
+            if metadata.isDataless {
+                // 取得を伴う問い合わせを避ける。判定できないものとして扱う
+                metadata.isPackageUnknown = true
+            } else if let isPackage = isPackage(packagePath) {
+                metadata.isPackage = isPackage
+            } else {
+                metadata.isPackageUnknown = true
+            }
         }
         return metadata
     }
@@ -166,10 +174,12 @@ public struct POSIXFileSystem: FileSystemProvider {
         #endif
     }
 
-    private static func isPackage(_ path: String) -> Bool {
+    /// パッケージ判定。判定できなければ nil。
+    private static func isPackage(_ path: String) -> Bool? {
         #if os(macOS)
         let url = URL(fileURLWithPath: path, isDirectory: true)
-        return (try? url.resourceValues(forKeys: [.isPackageKey]))?.isPackage ?? false
+        guard let values = try? url.resourceValues(forKeys: [.isPackageKey]) else { return nil }
+        return values.isPackage
         #else
         return false
         #endif

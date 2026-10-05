@@ -3,14 +3,17 @@ import Foundation
 public enum ScanCoordinatorError: Error, Equatable, Sendable {
     /// 実行中（キャンセル待ちを含む）のスキャンがある
     case scanInProgress
+    /// ゴミ箱移動などのファイル操作を実行中
+    case fileOperationInProgress
 }
 
 /// アプリ全体で実行中のスキャンを1件に制限し、各スキャンのスレッド構成を組み立てる。
+/// ファイル操作とスキャンが同時に走らないよう、両者の排他もここで管理する。
 ///
 /// ```text
 /// 列挙スレッド ──(上限付きキュー)──> 保存スレッド ──> ScanStore
 ///                                                   │
-///                         進捗タイマー（既定 250 ms）──> ScanSession.updates
+///                         進捗タイマー（既定 250 ms）──> ScanSession.makeUpdates()
 /// ```
 public final class ScanCoordinator: @unchecked Sendable {
     public struct Configuration: Sendable {
@@ -28,6 +31,7 @@ public final class ScanCoordinator: @unchecked Sendable {
     private let configuration: Configuration
     private let lock = NSLock()
     private var currentSession: ScanSession?
+    private var fileOperationInProgress = false
 
     public init(provider: any FileSystemProvider = POSIXFileSystem(), configuration: Configuration = Configuration()) {
         self.provider = provider
@@ -40,10 +44,45 @@ public final class ScanCoordinator: @unchecked Sendable {
         return currentSession
     }
 
-    /// 新しいスキャンを始める。前のスキャンが終端状態でなければ失敗する。
+    public var isFileOperationInProgress: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return fileOperationInProgress
+    }
+
+    /// `session` が現在の結果で、走査が終わっており、他の操作がない場合に限り、ファイル操作を始める。
+    /// 成功したら必ず `endFileOperation()` を呼ぶ。操作中は新しいスキャンを始めない。
+    public func beginFileOperation(on session: ScanSession) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !fileOperationInProgress,
+              currentSession === session,
+              session.currentState.isTerminal else { return false }
+        fileOperationInProgress = true
+        return true
+    }
+
+    public func endFileOperation() {
+        lock.lock()
+        fileOperationInProgress = false
+        lock.unlock()
+    }
+
+    /// `session` が現在の結果で、走査が終わっているか。
+    public func isCurrentAndFinished(_ session: ScanSession) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentSession === session && session.currentState.isTerminal
+    }
+
+    /// 新しいスキャンを始める。前のスキャンが終端状態でない、またはファイル操作中なら失敗する。
     /// 対象を変える場合は、前のセッションを `cancel()` して `waitUntilFinished()` を待ってから呼ぶ。
     public func start(scope: ScanScope) throws -> ScanSession {
         lock.lock()
+        if fileOperationInProgress {
+            lock.unlock()
+            throw ScanCoordinatorError.fileOperationInProgress
+        }
         if let currentSession, !currentSession.currentState.isTerminal {
             lock.unlock()
             throw ScanCoordinatorError.scanInProgress

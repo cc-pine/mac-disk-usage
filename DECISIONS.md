@@ -28,11 +28,14 @@
 |---|---|
 | システム領域 | `/System`（`/System/Volumes/Data` 経由の別名経路を含む）、`/Library`、`/bin`、`/sbin`、`/usr`、`/private`、`/etc`、`/var`、`/tmp`、`/dev`、`/cores`、`/opt` |
 | アプリケーション | `/Applications`（`.app` 内部はパッケージ規則でも禁止） |
-| ユーザーのライブラリ | ホームディレクトリの `Library`、`.Trash` |
-| 範囲 | スキャンルート自身、スキャン範囲外の項目 |
-| 構造 | ディレクトリ、シンボリックリンク、特殊ファイル、パッケージ内部（スキャンルートより上の祖先がパッケージである場合を含む） |
+| ユーザーのライブラリ | すべてのユーザーの `/Users/*/Library` と `/Users/*/.Trash`。加えて、現在のユーザーのホーム（パスワードデータベースの値とその実体パス）の `Library`、`.Trash` |
+| 他のボリューム | `/Volumes/*/` 直下の `System`、`Library`、`private`、`Applications`、`usr`、`bin`、`sbin`、`cores`、`opt`、`Users/*/Library`、`Users/*/.Trash`、`.Trashes`、`.Spotlight-V100`、`.fseventsd`、`.DocumentRevisions-V100`、`.TemporaryItems`、`Backups.backupdb`、`.MobileBackups` |
+| 範囲 | スキャンルート自身、スキャン範囲外の項目、現在の結果ではない（再スキャン前の）結果の項目 |
+| 構造 | ディレクトリ、シンボリックリンク、特殊ファイル、ハードリンクが複数あるファイル、パッケージ内部（スキャンルートより上の祖先がパッケージである場合、パッケージか判定できない場合を含む） |
 
 外付けボリューム（`/Volumes/<名前>/...`）上の通常ファイルは、上記に当たらなければ移動できる。
+
+移動の直前には、ルートから親までの各フォルダと対象ファイルの `(device, inode)`、種類、論理サイズ、更新日時、ハードリンク数を `lstat` で再確認する。移動はファイル参照 URL で行い、移動後にゴミ箱内の項目の識別情報を確かめ、一致しなければ利用者に知らせる。ゴミ箱移動とスキャンは `ScanCoordinator` のゲートで排他にする。
 
 ## サイズの取得方法
 
