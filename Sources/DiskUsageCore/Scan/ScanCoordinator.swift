@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public enum ScanCoordinatorError: Error, Equatable, Sendable {
     /// 実行中（キャンセル待ちを含む）のスキャンがある
@@ -106,6 +111,8 @@ public final class ScanCoordinator: @unchecked Sendable {
         let ingest = Thread {
             while let batch = queue.take() {
                 session.store.apply(batch)
+                // 保存が続いても UI の問い合わせがロックを取れるよう、バッチごとに実行を譲る
+                sched_yield()
             }
             // 未反映のバッチと集計を確定してから最終イベントを通知する
             ticker.cancel()

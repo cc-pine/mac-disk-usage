@@ -45,11 +45,19 @@ public final class ScanStore: @unchecked Sendable {
         var subtreeIncomplete = false
     }
 
+    /// 1ノードあたりの固定メモリ量（名前の文字列本体などヒープ分は含まない）。計測用。
+    static var nodeStride: Int { MemoryLayout<Node>.stride }
+
     public let rootPath: String
     /// 大きなファイル一覧の暫定索引に保持する件数
     public let provisionalFileLimit: Int
 
     private let lock = NSLock()
+    /// 進捗通知用の版と件数だけを守る軽いロック。保存中でも本体のロックを待たずに読める。
+    /// 取る順序は lock → statsLock のみ。
+    private let statsLock = NSLock()
+    private var publishedRevision = 0
+    private var publishedCounts = ScanCounts()
     private var nodes: [Node] = []
     private var children: [[Int32]] = []
     private var counts = ScanCounts()
@@ -87,7 +95,15 @@ public final class ScanStore: @unchecked Sendable {
         }
         if changed {
             revision += 1
+            publishStats()
         }
+    }
+
+    private func publishStats() {
+        statsLock.lock()
+        publishedRevision = revision
+        publishedCounts = counts
+        statsLock.unlock()
     }
 
     /// 走査を終えた時点で未完了のディレクトリを部分結果として確定する。
@@ -110,6 +126,7 @@ public final class ScanStore: @unchecked Sendable {
         }
         isFinalized = true
         revision += 1
+        publishStats()
         return hadUnvisited
     }
 
@@ -282,16 +299,18 @@ public final class ScanStore: @unchecked Sendable {
 
     // MARK: - 読み取り
 
+    /// 最後に保存し終えたバッチの版。保存中でも待たずに読める。
     public var currentRevision: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return revision
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        return publishedRevision
     }
 
+    /// 最後に保存し終えたバッチ時点の件数。保存中でも待たずに読める。
     public var currentCounts: ScanCounts {
-        lock.lock()
-        defer { lock.unlock() }
-        return counts
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        return publishedCounts
     }
 
     public var rootID: ItemID? {
@@ -360,12 +379,15 @@ public final class ScanStore: @unchecked Sendable {
     /// 確定後は全件の索引を一度だけ作り、以降の問い合わせで再ソートしない。
     public func largestFiles(offset: Int = 0, limit: Int = 100) -> ItemPage {
         lock.lock()
+        if isFinalized, sortedFileIndex == nil {
+            // 全件の並べ替えはロックの外で行い、他の問い合わせを待たせない
+            lock.unlock()
+            prepareFileIndex()
+            lock.lock()
+        }
         defer { lock.unlock() }
-        if isFinalized {
-            if sortedFileIndex == nil {
-                sortedFileIndex = sortBySize(fileIDs, pathTieBreak: true)
-            }
-            return page(of: sortedFileIndex!, offset: offset, limit: limit, isProvisional: false)
+        if isFinalized, let sortedFileIndex {
+            return page(of: sortedFileIndex, offset: offset, limit: limit, isProvisional: false)
         }
         if provisionalCache?.revision != revision {
             provisionalCache = (revision, sortBySize(topFiles.elements, pathTieBreak: true))
@@ -373,9 +395,27 @@ public final class ScanStore: @unchecked Sendable {
         return page(of: provisionalCache!.ids, offset: offset, limit: limit, isProvisional: true)
     }
 
-    /// 確定後に全件の索引を前もって作る。UI の最初の問い合わせを待たせないため、保存スレッドから呼ぶ。
+    /// 確定後に全件の索引を前もって作る。保存スレッドから呼ぶ。
+    ///
+    /// 確定後のノードは変更されないため、配列の参照を取ってロックの外で並べ、
+    /// その間も UI の問い合わせを待たせない。
     public func prepareFileIndex() {
-        _ = largestFiles(offset: 0, limit: 0)
+        lock.lock()
+        guard isFinalized, sortedFileIndex == nil else {
+            lock.unlock()
+            return
+        }
+        let snapshot = nodes
+        let ids = fileIDs
+        lock.unlock()
+
+        let sorted = Self.sortBySize(ids, nodes: snapshot, rootPath: rootPath, pathTieBreak: true)
+
+        lock.lock()
+        if sortedFileIndex == nil {
+            sortedFileIndex = sorted
+        }
+        lock.unlock()
     }
 
     /// ルートからの ID 列（パンくず用）。ルートが先頭。
@@ -401,6 +441,10 @@ public final class ScanStore: @unchecked Sendable {
     }
 
     private func pathLocked(_ index: Int) -> String {
+        Self.path(of: index, nodes: nodes, rootPath: rootPath)
+    }
+
+    private static func path(of index: Int, nodes: [Node], rootPath: String) -> String {
         var names: [String] = []
         var cursor = Int32(index)
         while cursor > 0 {
@@ -445,6 +489,10 @@ public final class ScanStore: @unchecked Sendable {
     }
 
     private func sortKey(_ index: Int) -> Int64? {
+        Self.sortKey(index, nodes: nodes)
+    }
+
+    private static func sortKey(_ index: Int, nodes: [Node]) -> Int64? {
         // ノード全体をコピーしないよう、必要なフィールドだけを読む
         switch nodes[index].kind {
         case .file:
@@ -495,23 +543,27 @@ public final class ScanStore: @unchecked Sendable {
     /// サイズの鍵を先に計算してから並べる。同サイズ・同名が多い大量のファイルでも、
     /// 親フォルダのパスは親ごとに一度だけ組み立てる。
     private func sortBySize(_ ids: [Int32], pathTieBreak: Bool) -> [Int32] {
+        Self.sortBySize(ids, nodes: nodes, rootPath: rootPath, pathTieBreak: pathTieBreak)
+    }
+
+    private static func sortBySize(_ ids: [Int32], nodes: [Node], rootPath: String, pathTieBreak: Bool) -> [Int32] {
         struct Key {
             let id: Int32
             let size: Int64?
         }
-        var keys = ids.map { Key(id: $0, size: sortKey(Int($0))) }
+        var keys = ids.map { Key(id: $0, size: sortKey(Int($0), nodes: nodes)) }
         var parentPaths: [Int32: String] = [:]
         func parentPath(_ id: Int32) -> String {
             let parent = nodes[Int(id)].parent
             if let cached = parentPaths[parent] {
                 return cached
             }
-            let path = parent >= 0 ? pathLocked(Int(parent)) : ""
+            let path = parent >= 0 ? Self.path(of: Int(parent), nodes: nodes, rootPath: rootPath) : ""
             parentPaths[parent] = path
             return path
         }
         keys.sort { lhs, rhs in
-            let order = Self.compareSize(lhs.size, rhs.size)
+            let order = compareSize(lhs.size, rhs.size)
             if order != 0 {
                 return order < 0
             }
