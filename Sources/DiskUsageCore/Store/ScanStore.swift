@@ -6,7 +6,7 @@ public struct ItemPage: Sendable, Equatable {
     public let offset: Int
     public let totalCount: Int
     public let revision: Int
-    /// スキャン中で、上位の一部だけを返している場合 true
+    /// 上位の一部だけを返している場合 true（スキャン中、または完了直後に全件の索引を作成中）
     public let isProvisional: Bool
 
     public init(items: [ScanItem], offset: Int, totalCount: Int, revision: Int, isProvisional: Bool) {
@@ -47,6 +47,9 @@ public final class ScanStore: @unchecked Sendable {
     private var fileIDs: [Int32] = []
     private var sortedFileIndex: [Int32]?
     private var isPreparingFileIndex = false
+    /// 全件索引の完成を待つための条件変数（lock とは独立に取る）
+    private let indexBuilt = NSCondition()
+    private var isFileIndexBuilt = false
     private var provisionalCache: (revision: Int, ids: [Int32])?
     private var childrenCache: (directory: Int, revision: Int, ids: [Int32])?
 
@@ -120,6 +123,9 @@ public final class ScanStore: @unchecked Sendable {
         precondition(parent < Int32(index), "親は子より先に保存する")
         precondition(parent >= 0 || index == 0, "ルート以外は親を持つ")
 
+        // 負のサイズは取得値として扱えないため、保存時に一度だけ 0 へ補正する（ノードと集計で値を揃える）
+        let logicalSize = item.logicalSize.map { max(0, $0) }
+        let allocatedSize = item.allocatedSize.map { max(0, $0) }
         var summary = SizeSummary()
         var traversal: TraversalState
         var listingDone = false
@@ -131,10 +137,10 @@ public final class ScanStore: @unchecked Sendable {
                 traversal = .pending
             case .file:
                 traversal = .complete
-                summary.knownLogicalBytes = item.logicalSize ?? 0
-                summary.knownAllocatedBytes = item.allocatedSize ?? 0
-                summary.unknownLogicalItems = item.logicalSize == nil ? 1 : 0
-                summary.unknownAllocatedItems = item.allocatedSize == nil ? 1 : 0
+                summary.knownLogicalBytes = logicalSize ?? 0
+                summary.knownAllocatedBytes = allocatedSize ?? 0
+                summary.unknownLogicalItems = logicalSize == nil ? 1 : 0
+                summary.unknownAllocatedItems = allocatedSize == nil ? 1 : 0
             case .symbolicLink, .other:
                 traversal = .complete
             }
@@ -157,8 +163,8 @@ public final class ScanStore: @unchecked Sendable {
             name: item.name,
             kind: item.kind,
             isPackage: item.isPackage,
-            logicalSize: item.kind == .file ? item.logicalSize : nil,
-            allocatedSize: item.kind == .file ? item.allocatedSize : nil,
+            logicalSize: item.kind == .file ? logicalSize : nil,
+            allocatedSize: item.kind == .file ? allocatedSize : nil,
             summary: summary,
             modifiedDate: item.modifiedDate,
             createdDate: item.createdDate,
@@ -390,7 +396,17 @@ public final class ScanStore: @unchecked Sendable {
     /// その間も UI の問い合わせを待たせない。
     public func prepareFileIndex() {
         lock.lock()
-        guard isFinalized, sortedFileIndex == nil, !isPreparingFileIndex else {
+        if isPreparingFileIndex {
+            // 他のスレッドが作成中なら完成を待つ（終端イベントを索引の完成後に送るため）
+            lock.unlock()
+            indexBuilt.lock()
+            while !isFileIndexBuilt {
+                indexBuilt.wait()
+            }
+            indexBuilt.unlock()
+            return
+        }
+        guard isFinalized, sortedFileIndex == nil else {
             lock.unlock()
             return
         }
@@ -405,6 +421,11 @@ public final class ScanStore: @unchecked Sendable {
         sortedFileIndex = sorted
         isPreparingFileIndex = false
         lock.unlock()
+
+        indexBuilt.lock()
+        isFileIndexBuilt = true
+        indexBuilt.broadcast()
+        indexBuilt.unlock()
     }
 
     /// ルートからの ID 列（パンくず用）。ルートが先頭。

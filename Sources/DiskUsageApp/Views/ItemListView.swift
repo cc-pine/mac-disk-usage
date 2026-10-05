@@ -159,7 +159,7 @@ struct PageBar: View {
                 .disabled(page.offset + page.items.count >= page.totalCount)
                 .help("次のページ")
                 if page.isProvisional {
-                    Text("スキャン中は上位の一部だけを表示しています")
+                    Text("上位の一部だけを表示しています（全件の一覧はスキャン完了後に準備します）")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
