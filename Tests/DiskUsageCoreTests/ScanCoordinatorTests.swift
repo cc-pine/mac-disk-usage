@@ -27,7 +27,7 @@ final class ScanCoordinatorTests: XCTestCase {
         let session = try coordinator.start(scope: ScanScope(rootPath: "/data", kind: .folder)!)
 
         var events: [ScanProgress] = []
-        for await progress in session.updates {
+        for await progress in session.makeUpdates() {
             events.append(progress)
         }
         let result = await session.waitUntilFinished()
@@ -63,10 +63,16 @@ final class ScanCoordinatorTests: XCTestCase {
     func testOnlyOneScanAtATimeAndRescanAfterCancel() async throws {
         let fs = makeTree()
         let gate = Gate()
-        fs.onList = { _ in gate.wait() }
+        let entered = DispatchSemaphore(value: 0)
+        fs.onList = { _ in
+            entered.signal()
+            gate.wait()
+        }
         let coordinator = ScanCoordinator(provider: fs, configuration: configuration())
         let scope = ScanScope(rootPath: "/data", kind: .folder)!
         let first = try coordinator.start(scope: scope)
+        // OS 呼び出しの最中にキャンセルする状況を作る
+        entered.wait()
 
         XCTAssertThrowsError(try coordinator.start(scope: scope)) { error in
             XCTAssertEqual(error as? ScanCoordinatorError, .scanInProgress)
@@ -87,6 +93,24 @@ final class ScanCoordinatorTests: XCTestCase {
         XCTAssertEqual(secondResult.state, .completed)
         XCTAssertEqual(first.currentState, .cancelled, "旧スキャンの状態は変わらない")
         XCTAssertTrue(coordinator.current === second)
+    }
+
+    func testEachSubscriberGetsTerminalEventAndLateSubscriberEndsImmediately() async throws {
+        let coordinator = ScanCoordinator(provider: makeTree(), configuration: configuration())
+        let session = try coordinator.start(scope: ScanScope(rootPath: "/data", kind: .folder)!)
+        let first = session.makeUpdates()
+        let second = session.makeUpdates()
+        async let lastOfFirst = first.reduce(nil as ScanProgress?) { $1 }
+        async let lastOfSecond = second.reduce(nil as ScanProgress?) { $1 }
+        let (a, b) = await (lastOfFirst, lastOfSecond)
+        XCTAssertEqual(a?.state, .completed)
+        XCTAssertEqual(b?.state, .completed)
+
+        var late: [ScanProgress] = []
+        for await progress in session.makeUpdates() {
+            late.append(progress)
+        }
+        XCTAssertEqual(late.map(\.state), [.completed])
     }
 
     func testCancelAfterFinishDoesNotChangeTerminalState() async throws {

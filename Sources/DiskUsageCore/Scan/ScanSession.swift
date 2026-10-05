@@ -18,13 +18,15 @@ public struct ScanResult: Equatable, Sendable {
 /// 1回のスキャン。ライフサイクルと終端状態の確定を一元化する。
 ///
 /// 列挙は専用スレッド、保存は別スレッドで行い、間を上限付きキューでつなぐ。
-/// UI 向けの進捗は一定間隔でまとめ、最新の値だけを `updates` に流す。
+/// UI 向けの進捗は一定間隔でまとめ、最新の値だけを `makeUpdates()` のストリームに流す。
+/// 経過時間は版が変わらない間は通知しないため、走査中の経過表示は `startedAt` から UI 側で計算する。
 public final class ScanSession: @unchecked Sendable {
     public let scanID = ScanID()
     public let scope: ScanScope
     public let store: ScanStore
 
-    private let lock = NSLock()
+    /// ストリームの onTermination が finish の中から同期的に呼ばれても詰まらないよう再帰ロックにする
+    private let lock = NSRecursiveLock()
     private var state: ScanState = .scanning
     private var cancelRequested = false
     private var isStale = false
@@ -34,18 +36,34 @@ public final class ScanSession: @unchecked Sendable {
     private var finishedAt: Date?
     private var finishedUptime: TimeInterval?
     private var lastPublished: (revision: Int, state: ScanState, isStale: Bool)?
-    private var continuation: AsyncStream<ScanProgress>.Continuation?
+    private var subscribers: [UUID: AsyncStream<ScanProgress>.Continuation] = [:]
     private var finishWaiters: [CheckedContinuation<ScanResult, Never>] = []
-
-    /// 最新の進捗だけを保持するストリーム。終端イベントの後に終わる。
-    public let updates: AsyncStream<ScanProgress>
 
     init(scope: ScanScope, provisionalFileLimit: Int) {
         self.scope = scope
         store = ScanStore(rootPath: scope.rootPath, provisionalFileLimit: provisionalFileLimit)
-        var continuation: AsyncStream<ScanProgress>.Continuation?
-        updates = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation = $0 }
-        self.continuation = continuation
+    }
+
+    /// 購読者ごとのストリーム。最初に現在の進捗を流し、以後は最新の値だけを保持する。
+    /// 終端イベントの後に終わる。終端後に購読した場合は終端の進捗だけを流して終わる。
+    public func makeUpdates() -> AsyncStream<ScanProgress> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let key = UUID()
+            lock.lock()
+            defer { lock.unlock() }
+            continuation.yield(progressLocked())
+            if state.isTerminal {
+                continuation.finish()
+                return
+            }
+            subscribers[key] = continuation
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.lock.lock()
+                self.subscribers[key] = nil
+                self.lock.unlock()
+            }
+        }
     }
 
     // MARK: - 公開状態
@@ -113,18 +131,22 @@ public final class ScanSession: @unchecked Sendable {
     // MARK: - コーディネーターから呼ぶ
 
     /// 進捗を流す。版・状態が変わっていなければ送らない。
+    ///
+    /// 状態の読み取りと送信を同じロックの中で行い、終端イベントの後や間に
+    /// 古い状態の進捗が割り込まないようにする（yield はブロックしない）。
     func publish(force: Bool = false) {
         lock.lock()
+        defer { lock.unlock() }
+        guard !state.isTerminal else { return }
         let progress = progressLocked()
-        let key = (progress.revision, progress.state, isStale)
+        let key = (progress.revision, progress.state, progress.isStale)
         if !force, let last = lastPublished, last == key {
-            lock.unlock()
             return
         }
         lastPublished = key
-        let continuation = self.continuation
-        lock.unlock()
-        continuation?.yield(progress)
+        for continuation in subscribers.values {
+            continuation.yield(progress)
+        }
     }
 
     /// 終端状態を一度だけ確定する。保存と集計の確定後に呼ぶ。
@@ -158,14 +180,16 @@ public final class ScanSession: @unchecked Sendable {
         let result = resultLocked()
         let waiters = finishWaiters
         finishWaiters.removeAll()
-        let continuation = self.continuation
-        self.continuation = nil
-        lastPublished = (store.currentRevision, state, isStale)
         let progress = progressLocked()
+        lastPublished = (progress.revision, progress.state, progress.isStale)
+        let continuations = subscribers.values
+        subscribers.removeAll()
+        for continuation in continuations {
+            continuation.yield(progress)
+            continuation.finish()
+        }
         lock.unlock()
 
-        continuation?.yield(progress)
-        continuation?.finish()
         for waiter in waiters {
             waiter.resume(returning: result)
         }
@@ -194,7 +218,8 @@ public final class ScanSession: @unchecked Sendable {
             counts: store.currentCounts,
             startedAt: startedAt,
             finishedAt: finishedAt,
-            elapsed: elapsedLocked()
+            elapsed: elapsedLocked(),
+            isStale: isStale
         )
     }
 

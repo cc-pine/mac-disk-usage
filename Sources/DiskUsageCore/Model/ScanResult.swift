@@ -75,6 +75,8 @@ public struct ScanProgress: Equatable, Sendable {
     public let startedAt: Date
     public let finishedAt: Date?
     public let elapsed: TimeInterval
+    /// ゴミ箱移動などで結果が古くなったか
+    public let isStale: Bool
 
     public init(
         scanID: ScanID,
@@ -83,7 +85,8 @@ public struct ScanProgress: Equatable, Sendable {
         counts: ScanCounts,
         startedAt: Date,
         finishedAt: Date?,
-        elapsed: TimeInterval
+        elapsed: TimeInterval,
+        isStale: Bool = false
     ) {
         self.scanID = scanID
         self.revision = revision
@@ -92,5 +95,6 @@ public struct ScanProgress: Equatable, Sendable {
         self.startedAt = startedAt
         self.finishedAt = finishedAt
         self.elapsed = elapsed
+        self.isStale = isStale
     }
 }
