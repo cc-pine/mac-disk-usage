@@ -28,7 +28,8 @@ final class MacIntegrationTests: XCTestCase {
         let users = try XCTUnwrap(try fs.metadata(atPath: "/Users").get().identity)
         let data = try XCTUnwrap(try fs.metadata(atPath: ScopeResolver.dataVolumePath).get().identity)
         let dataUsers = try XCTUnwrap(try fs.metadata(atPath: ScopeResolver.dataVolumePath + "/Users").get().identity)
-        XCTAssertNotEqual(root.device, data.device, "System と Data が別ボリュームである前提を確かめる")
+        // System と Data のデバイス番号は環境によって同じこともある（GitHub の macOS 15 ランナーでは同じだった）。
+        // どちらでも許可する組に含めればよいので、異なることは前提にしない。
         XCTAssertEqual(users, dataUsers, "/Users と /System/Volumes/Data/Users は同じ実体（firmlink）")
         XCTAssertTrue(scope.allowedDevices.contains(root.device))
         XCTAssertTrue(scope.allowedDevices.contains(data.device))
