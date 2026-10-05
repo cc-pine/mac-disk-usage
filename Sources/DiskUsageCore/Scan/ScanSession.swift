@@ -211,11 +211,12 @@ public final class ScanSession: @unchecked Sendable {
     }
 
     private func progressLocked() -> ScanProgress {
-        ScanProgress(
+        let stats = store.currentStats
+        return ScanProgress(
             scanID: scanID,
-            revision: store.currentRevision,
+            revision: stats.revision,
             state: state,
-            counts: store.currentCounts,
+            counts: stats.counts,
             startedAt: startedAt,
             finishedAt: finishedAt,
             elapsed: elapsedLocked(),
@@ -224,14 +225,15 @@ public final class ScanSession: @unchecked Sendable {
     }
 
     private func resultLocked() -> ScanResult {
-        ScanResult(
+        let stats = store.currentStats
+        return ScanResult(
             scanID: scanID,
             scope: scope,
             state: state,
             startedAt: startedAt,
             finishedAt: finishedAt,
-            revision: store.currentRevision,
-            counts: store.currentCounts,
+            revision: stats.revision,
+            counts: stats.counts,
             isStale: isStale,
             failureDescription: failureDescription
         )

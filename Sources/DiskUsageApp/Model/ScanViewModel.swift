@@ -243,16 +243,19 @@ final class ScanViewModel {
         refresh()
     }
 
+    /// ビューの描画中に評価されるため、ストアのロックを取らず問い合わせ結果のパンくずから判定する。
     var canGoUp: Bool {
-        guard let session, let directoryID else { return false }
-        return session.store.item(directoryID)?.parentID != nil
+        breadcrumbs.count > 1
     }
 
     func goUp() {
-        // 問い合わせ結果の反映を待たず、ストアから現在のフォルダの親を引く
-        guard let session, let current = directoryID, let parent = session.store.item(current)?.parentID else { return }
-        open(parent)
+        // パンくずは現在のフォルダと一致する場合だけ返るので、表示より古い親へ移ることはない
+        let trail = breadcrumbs
+        guard trail.count > 1, let current = directoryID else { return }
+        directoryID = trail[trail.count - 2].id
+        childrenOffset = 0
         selectionID = current
+        refresh()
     }
 
     /// 一覧の行やタイルを確定操作したとき。フォルダなら開き、それ以外は選択する。

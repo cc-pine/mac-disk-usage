@@ -45,7 +45,8 @@ struct SyntheticFileSystem: FileSystemProvider {
             }
         } else {
             entries.reserveCapacity(filesPerLeaf)
-            var seed = UInt64(truncatingIfNeeded: path.hashValue)
+            // hashValue はプロセスごとに変わるため、毎回同じ値になる FNV を種にする
+            var seed = identity(path).inode
             for i in 0..<filesPerLeaf {
                 seed = seed &* 6364136223846793005 &+ 1442695040888963407
                 let logical = Int64(seed >> 44)  // 0〜1 MB 程度
@@ -87,7 +88,9 @@ final class BenchmarkTests: XCTestCase {
 
         // 走査中に UI と同じ問い合わせを繰り返し、待たされた最大時間を測る
         let readerLatency = LatencyRecorder()
+        let readerDone = DispatchSemaphore(value: 0)
         let reader = Thread {
+            defer { readerDone.signal() }
             let store = session.store
             while !session.currentState.isTerminal {
                 let begin = ContinuousClock.now
@@ -112,6 +115,7 @@ final class BenchmarkTests: XCTestCase {
         }
         let result = await session.waitUntilFinished()
         let scanDuration = clock.now - start
+        blockingWait(readerDone)
 
         XCTAssertEqual(result.state, .completed)
         XCTAssertEqual(result.counts.files, fs.expectedFiles)
@@ -122,7 +126,10 @@ final class BenchmarkTests: XCTestCase {
         let largestDuration = clock.now - queryStart
 
         let childStart = clock.now
-        let leaf = store.children(of: store.rootID!).items[0].id
+        var leaf = store.rootID!
+        while let next = store.children(of: leaf, offset: 0, limit: 1).items.first, next.kind == .directory {
+            leaf = next.id
+        }
         _ = store.children(of: leaf, offset: 0, limit: 200)
         let childDuration = clock.now - childStart
 
@@ -135,20 +142,32 @@ final class BenchmarkTests: XCTestCase {
         [benchmark] files=\(result.counts.files) directories=\(result.counts.directories) items=\(store.itemCount)
         [benchmark] scan=\(scanDuration) updates=\(updates) maxGapBetweenUpdates=\(maxGap)
         [benchmark] readerQueries=\(readerLatency.count) maxReaderLatency=\(readerLatency.maximum)
-        [benchmark] firstLargestFilesQuery=\(largestDuration) deepPage=\(pageDuration) childrenQuery=\(childDuration)
+        [benchmark] largestFilesQueryAfterFinish=\(largestDuration) deepPage=\(pageDuration) leafChildrenQuery=\(childDuration)
         [benchmark] nodeStride=\(ScanStore.nodeStride) bytes peakRSS=\(Self.peakResidentBytes() / 1_000_000) MB
         """)
     }
 
     final class LatencyRecorder: @unchecked Sendable {
         private let lock = NSLock()
-        private(set) var maximum: Duration = .zero
-        private(set) var count = 0
+        private var storedMaximum: Duration = .zero
+        private var storedCount = 0
+
+        var maximum: Duration {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedMaximum
+        }
+
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedCount
+        }
 
         func record(_ duration: Duration) {
             lock.lock()
-            maximum = max(maximum, duration)
-            count += 1
+            storedMaximum = max(storedMaximum, duration)
+            storedCount += 1
             lock.unlock()
         }
     }

@@ -94,8 +94,10 @@ public final class ScanStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard !isFinalized else { return false }
+        // ルートの走査が確定していれば、未完了のディレクトリは残っていない（全ノードを見なくてよい）
+        let hasPending = nodes.first?.traversalState == .pending
         var hadUnvisited = false
-        for index in nodes.indices where nodes[index].kind == .directory && nodes[index].traversalState == .pending {
+        for index in nodes.indices where hasPending && nodes[index].kind == .directory && nodes[index].traversalState == .pending {
             hadUnvisited = true
             nodes[index].traversalState = .partial
             if !nodes[index].listingDone {
@@ -277,6 +279,13 @@ public final class ScanStore: @unchecked Sendable {
     }
 
     // MARK: - 読み取り
+
+    /// 最後に保存し終えたバッチの版と件数を、同じ時点の組として返す。保存中でも待たずに読める。
+    public var currentStats: (revision: Int, counts: ScanCounts) {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        return (publishedRevision, publishedCounts)
+    }
 
     /// 最後に保存し終えたバッチの版。保存中でも待たずに読める。
     public var currentRevision: Int {

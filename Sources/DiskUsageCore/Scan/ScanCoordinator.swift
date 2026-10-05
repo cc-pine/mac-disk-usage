@@ -111,7 +111,8 @@ public final class ScanCoordinator: @unchecked Sendable {
         let ingest = Thread {
             while let batch = queue.take() {
                 session.store.apply(batch)
-                // 保存が続いても UI の問い合わせがロックを取れるよう、バッチごとに実行を譲る
+                // 保存が続く間も他のスレッドに実行の機会を譲る（ロックが待ち手へ渡る保証はない。
+                // 主な対策は、進捗を別ロックで読めることと、重い並べ替えをロックの外で行うこと）
                 sched_yield()
             }
             // 未反映のバッチと集計を確定してから最終イベントを通知する
