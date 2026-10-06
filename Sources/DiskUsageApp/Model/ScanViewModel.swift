@@ -13,7 +13,7 @@ enum ResultTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .list: return "一覧"
-        case .treemap: return "Treemap"
+        case .treemap: return "ツリーマップ"
         case .largeFiles: return "大きなファイル"
         }
     }
@@ -251,9 +251,9 @@ final class ScanViewModel {
             let session = try coordinator.start(scope: scope)
             attach(session, target: target)
         } catch ScanCoordinatorError.fileOperationInProgress {
-            message = UserMessage(title: "スキャンを開始できません", detail: "ゴミ箱への移動が終わってから、もう一度試してください。")
+            message = UserMessage(title: "スキャンを開始できません", detail: "ゴミ箱への移動が終わってから、もう一度お試しください。")
         } catch {
-            message = UserMessage(title: "スキャンを開始できません", detail: "前のスキャンの停止を待っています。少し待ってからもう一度試してください。")
+            message = UserMessage(title: "スキャンを開始できません", detail: "前のスキャンを停止しています。しばらくしてからもう一度お試しください。")
         }
     }
 

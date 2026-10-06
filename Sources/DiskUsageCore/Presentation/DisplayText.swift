@@ -65,7 +65,7 @@ public enum DisplayText {
             parts.append(exclusion(reason))
         } else if item.kind == .directory {
             switch item.traversalState {
-            case .pending: parts.append("走査中")
+            case .pending: parts.append("スキャン中")
             case .partial: parts.append("一部のみ走査")
             case .complete: break
             case .excluded: parts.append("除外")
@@ -77,8 +77,8 @@ public enum DisplayText {
     public static func exclusion(_ reason: ExclusionReason) -> String {
         switch reason {
         case .otherVolume: return "別のボリューム"
-        case .duplicatePath: return "同じフォルダへの別経路"
-        case .scopeRule: return "起動ディスクの範囲規則"
+        case .duplicatePath: return "別経路"
+        case .scopeRule: return "範囲規則"
         }
     }
 

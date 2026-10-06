@@ -13,9 +13,9 @@ struct ContentView: View {
         } detail: {
             if model.session == nil {
                 ContentUnavailableView(
-                    "スキャン対象を選んでください",
+                    "スキャン対象を選択してください",
                     systemImage: "internaldrive",
-                    description: Text("左の一覧からボリュームまたはフォルダを選び、「スキャン」を押します。")
+                    description: Text("左の一覧からボリュームまたはフォルダを選択し、「スキャン」をクリックします。")
                 )
             } else {
                 ResultView()
@@ -33,7 +33,7 @@ struct ContentView: View {
                     } label: {
                         Label("詳細", systemImage: "sidebar.right")
                     }
-                    .help("詳細パネルの表示を切り替える")
+                    .help("詳細パネルの表示を切り替えます")
                 }
             }
         }
@@ -47,7 +47,7 @@ struct ContentView: View {
             Button("中止してスキャン") {
                 Task { await model.startScan() }
             }
-            Button("続ける", role: .cancel) {}
+            Button("スキャンを続ける", role: .cancel) {}
         } message: {
             Text("ここまでの結果は破棄され、新しい対象の結果に置き換わります。")
         }
@@ -74,7 +74,7 @@ struct ContentView: View {
         場所: \(DisplayText.visible(candidate.path))
         割り当て済みサイズ: \(ByteFormatting.string(candidate.allocatedSize))
 
-        ゴミ箱へ移すだけで、完全には削除しません。空き容量がこのサイズだけ増えるとは限りません。
+        ゴミ箱へ移動するだけで、項目は完全には削除されません。空き容量がこのサイズ分増えるとは限りません。
         """
     }
 }

@@ -23,9 +23,9 @@ public enum TrashBlockReason: Error, Equatable, Sendable {
 
     public var message: String {
         switch self {
-        case .scanNotFinished: return "スキャン中・キャンセル待ちの間は移動できません。"
+        case .scanNotFinished: return "スキャン中と、スキャンの中止処理中は移動できません。"
         case .operationInProgress: return "別のゴミ箱操作を実行中です。"
-        case .notRegularFile: return "初版で移動できるのは通常ファイル1件だけです。"
+        case .notRegularFile: return "移動できるのは通常のファイルだけです。"
         case .unreadable: return "項目を読み取れなかったため移動できません。"
         case .scanRoot: return "スキャン対象そのものは移動できません。"
         case .protectedLocation(let root): return "保護された場所（\(root)）の項目は移動できません。"

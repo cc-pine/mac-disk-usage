@@ -159,7 +159,7 @@ public struct POSIXFileSystem: FileSystemProvider {
             return FileSystemError(kind: .notFound, code: code, message: message("フォルダではなくなりました"))
         case EDEADLK:
             // dataless 項目の取得を抑止した結果
-            return FileSystemError(kind: .cloudOnly, code: code, message: "クラウド上にだけある項目です")
+            return FileSystemError(kind: .cloudOnly, code: code, message: "クラウド上にのみある項目です")
         case ENAMETOOLONG:
             return FileSystemError(kind: .other, code: code, message: message("パスが長すぎるため読み取れません"))
         case EIO:

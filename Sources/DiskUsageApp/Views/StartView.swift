@@ -32,7 +32,7 @@ struct StartView: View {
                 Button {
                     choosingFolder = true
                 } label: {
-                    Label("フォルダを選ぶ…", systemImage: "folder.badge.plus")
+                    Label("フォルダを選択…", systemImage: "folder.badge.plus")
                 }
                 if let target = model.selectedTarget {
                     Text("対象: \(target.displayName)")
@@ -71,7 +71,7 @@ struct StartView: View {
                 } label: {
                     Label("ボリュームを再読み込み", systemImage: "arrow.clockwise")
                 }
-                .help("ボリューム一覧と容量情報を取り直す")
+                .help("ボリューム一覧と容量情報を更新します")
             }
         }
     }

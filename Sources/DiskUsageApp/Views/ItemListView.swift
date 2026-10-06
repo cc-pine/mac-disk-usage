@@ -37,7 +37,7 @@ struct ItemListView: View {
         case .notScanned: return "このフォルダは走査していません"
         case .readable:
             switch directory.traversalState {
-            case .pending: return "走査中です"
+            case .pending: return "スキャン中です"
             case .partial where directory.sizeSummary.hasUnvisitedDescendants:
                 return "走査を中止したため、このフォルダの中身は取得していません"
             case .excluded: return "このフォルダは除外したため走査していません"
@@ -161,7 +161,7 @@ struct PageBar: View {
                 .disabled(page.offset + page.items.count >= page.totalCount)
                 .help("次のページ")
                 if page.isProvisional {
-                    Text("上位の一部だけを表示しています（全件の一覧はスキャン完了後に準備します）")
+                    Text("上位の一部だけを表示しています。すべての項目はスキャン完了後に表示できます。")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()

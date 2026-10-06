@@ -81,12 +81,12 @@ private struct ResultHeader: View {
             }
             // 案内は横幅いっぱいの行にして、狭いウィンドウでも縦に伸びすぎないようにする
             if model.state == .failed, let reason = model.result?.failureDescription {
-                Banner(text: "スキャンできませんでした: \(reason)。対象を選び直すか、アクセス権を確認してください。", color: .red)
+                Banner(text: "スキャンできませんでした。理由: \(reason)", color: .red)
                 if model.result?.counts.problemItems ?? 0 > 0 {
                     PermissionGuidance()
                 }
             } else if let problems = model.progress?.counts.problemItems, problems > 0 {
-                Banner(text: "情報を取得できなかった場所があります（アクセス拒否・読み取りエラー・クラウド上だけの項目など）。画面下の「情報を取得できなかった項目」から確認できます。", color: .orange)
+                Banner(text: "情報を取得できなかった場所があります（アクセス拒否・読み取りエラー・クラウド上のみの項目など）。画面下の「未取得」から確認できます。", color: .orange)
             }
             if model.result?.isStale == true {
                 Banner(text: "ゴミ箱へ移動した項目があります。表示中の容量は移動前のものです。最新の容量は再スキャンで確認してください。", color: .orange)
@@ -126,9 +126,9 @@ struct AggregationExplanation: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("走査集計はボリュームの使用量と一致しないことがあります")
                 .font(.headline)
-            Text("・読めなかった場所や、除外した場所（別ボリューム・別経路など）は集計に含まれません。")
+            Text("・読み取れなかった場所や、除外した場所（別ボリューム・別経路など）は集計に含まれません。")
             Text("・APFS のクローンやハードリンクは共有ブロックを区別せず、パスごとに数えます。")
-            Text("・スナップショットや purgeable 領域、システム領域の一部は走査で見えません。")
+            Text("・スナップショットやパージ可能な領域、システム領域の一部は走査で見えません。")
             Text("・割り当て済みサイズは、その項目だけが占める容量とは限らず、ゴミ箱へ移して空き容量が同じだけ増えるとも限りません。")
             Text("・ボリューム容量は macOS が報告する値で、取得時刻の時点のものです。")
         }
@@ -227,19 +227,19 @@ private struct StatusFooter: View {
         if let counts = model.progress?.counts {
             Text("ファイル \(counts.files.formatted()) 件")
             Text("フォルダ \(counts.directories.formatted()) 件")
-            Button("情報を取得できなかった項目 \(counts.problemItems.formatted()) 件") {
+            Button("未取得 \(counts.problemItems.formatted()) 件") {
                 sheet = .problems
             }
             .buttonStyle(.link)
             .foregroundStyle(counts.problemItems > 0 ? .orange : .secondary)
             .disabled(counts.problemItems == 0)
-            .help("アクセス拒否・読み取りエラー・クラウド上のみなど、情報を取得できなかった項目。クリックで一覧を表示")
+            .help("アクセス拒否・読み取りエラー・クラウド上のみなど、情報を取得できなかった項目です。クリックすると一覧を表示します。")
             Button("除外 \(counts.excludedItems.formatted()) 件") {
                 sheet = .excluded
             }
             .buttonStyle(.link)
             .disabled(counts.excludedItems == 0)
-            .help("別ボリューム・別経路・デバイス領域など、範囲の方針により走査しなかった場所（除外領域）。クリックで一覧を表示")
+            .help("別ボリューム・別経路・デバイス領域など、走査範囲の規則により走査しなかった場所です。クリックすると一覧を表示します。")
         }
     }
 

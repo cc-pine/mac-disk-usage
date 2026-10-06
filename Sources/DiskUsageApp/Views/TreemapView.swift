@@ -12,7 +12,7 @@ struct TreemapView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let directory = model.directory, directory.isSizeIncomplete {
-                Label("部分的な結果です。読めなかった場所・未走査の場所は面積に含みません。", systemImage: "exclamationmark.triangle")
+                Label("部分的な結果です。読み取れなかった場所・未走査の場所は面積に含みません。", systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .padding(.horizontal, 12)
@@ -25,7 +25,7 @@ struct TreemapView: View {
                         ContentUnavailableView(
                             "表示できる容量がありません",
                             systemImage: "square.grid.2x2",
-                            description: Text("このフォルダの直下に、サイズが分かる 0 bytes より大きい項目がありません。一覧ではすべての項目を確認できます。")
+                            description: Text("このフォルダの直下には、サイズが 0 バイトより大きいと分かっている項目がありません。すべての項目は一覧で確認できます。")
                         )
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
@@ -132,7 +132,7 @@ private struct TreemapCanvas: View {
             }
         })
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("容量の Treemap。一覧タブで同じ項目をキーボード操作できます。")
+        .accessibilityLabel("容量のツリーマップ。一覧タブでも同じ項目をキーボードで操作できます。")
     }
 
     private func tile(at point: CGPoint) -> TreemapTile? {

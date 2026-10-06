@@ -98,9 +98,9 @@ public enum TrashFailure: Error, Equatable, Sendable {
         switch self {
         case .blocked(let reason): return reason.message
         case .changedSinceScan(let detail): return "スキャン後に項目が変わったため中止しました（\(detail)）。再スキャンしてから選び直してください。"
-        case .systemRefused(let detail): return "ゴミ箱へ移動できませんでした: \(detail)"
-        case .cannotVerify(let detail): return "移動前の確認ができないため中止しました（\(detail)）。"
-        case .unexpectedItemMoved(let path): return "確認した項目がゴミ箱へ移ったことを確かめられませんでした。元の場所に残っているか、別の項目が移動された可能性があります。ゴミ箱（\(path ?? "場所不明")）と元の場所を確認し、必要なら元に戻してください。"
+        case .systemRefused(let detail): return detail
+        case .cannotVerify(let detail): return "移動前に項目を確認できなかったため、中止しました。詳細: \(detail)"
+        case .unexpectedItemMoved(let path): return "選んだ項目がゴミ箱へ移動したことを確認できませんでした。元の場所に残っているか、別の項目が移動した可能性があります。ゴミ箱（\(path ?? "場所不明")）と元の場所を確認し、必要に応じて元に戻してください。"
         case .unsupported: return "この環境ではゴミ箱へ移動できません。"
         }
     }

@@ -75,10 +75,10 @@ public struct FileSystemScanner: Sendable {
             modifiedDate: rootMetadata.modifiedDate, createdDate: rootMetadata.createdDate,
             accessState: rootIsCloudOnly ? .notScanned : .readable,
             fileIdentity: rootMetadata.identity,
-            errorDescription: rootIsCloudOnly ? "クラウド上にだけあるフォルダです" : nil
+            errorDescription: rootIsCloudOnly ? "クラウド上にのみあるフォルダです" : nil
         )))
         if rootIsCloudOnly {
-            return .rootFailed(FileSystemError(kind: .cloudOnly, code: 0, message: "クラウド上にだけあるフォルダのため、ダウンロードを避けて走査しません"))
+            return .rootFailed(FileSystemError(kind: .cloudOnly, code: 0, message: "クラウド上にのみあるフォルダのため、ダウンロードを避けて走査しません"))
         }
         guard rootMetadata.kind == .directory else {
             let error = FileSystemError(kind: .other, code: 0, message: "フォルダではありません")
@@ -142,7 +142,7 @@ public struct FileSystemScanner: Sendable {
                         modifiedDate: metadata.modifiedDate, createdDate: metadata.createdDate,
                         accessState: cloudOnly ? .notScanned : .readable,
                         fileIdentity: metadata.identity, exclusionReason: exclusion,
-                        errorDescription: cloudOnly ? "クラウド上にだけあるフォルダです" : nil
+                        errorDescription: cloudOnly ? "クラウド上にのみあるフォルダです" : nil
                     )))
                     if isDirectory, exclusion == nil, !cloudOnly {
                         stack.append((id, path, metadata.identity))

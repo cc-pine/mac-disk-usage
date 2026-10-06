@@ -37,7 +37,7 @@ final class DisplayTextTests: XCTestCase {
 
     func testExcludedIsNotDescribedAsReadable() {
         let excluded = item(kind: .directory, traversal: .excluded, exclusion: .duplicatePath)
-        XCTAssertEqual(DisplayText.access(of: excluded), "除外（同じフォルダへの別経路）")
+        XCTAssertEqual(DisplayText.access(of: excluded), "除外（別経路）")
         XCTAssertEqual(DisplayText.access(of: item(kind: .directory, access: .denied, traversal: .partial)), "アクセス拒否・一部のみ走査")
     }
 
