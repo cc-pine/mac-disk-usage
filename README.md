@@ -21,7 +21,7 @@ open build/DiskUsage.app
 swift run DiskUsageApp
 ```
 
-起動ディスク全体を読むには、システム設定の「プライバシーとセキュリティ」→「フルディスクアクセス」でアプリを許可する。許可しなくても読める範囲は走査でき、読めなかった場所は結果画面の「読み取れなかった項目」から確認できる。
+起動ディスク全体を読むには、システム設定の「プライバシーとセキュリティ」→「フルディスクアクセス」でアプリを許可する。許可しなくても読める範囲は走査でき、読めなかった場所は結果画面の「情報を取得できなかった項目」から確認できる。
 
 ## テスト
 
@@ -40,7 +40,8 @@ MDU_BENCHMARK=1 swift test -c release --filter BenchmarkTests  # 合成した100
 Sources/
 ├── DiskUsageCore/          プラットフォームに依存しない中核（Linux でもテスト可能）
 │   ├── Model/              ScanItem・SizeSummary・ScanScope・ScanState・VolumeCapacity
-│   ├── FileSystem/         FileSystemProvider と lstat / openat による実装
+│   ├── Support/            10進単位の容量表記（ByteFormatting）、成分単位のパス操作（PathUtilities）
+│   ├── FileSystem/         FileSystemProvider と、lstat・open(O_NOFOLLOW)・fdopendir・fstatat による実装
 │   ├── Scan/               FileSystemScanner・ScanCoordinator・ScanSession・ScopeResolver
 │   ├── Store/              ScanStore（ID 索引のノード、祖先への集計、ファイル索引）
 │   ├── Treemap/            squarified Treemap のレイアウト計算
@@ -64,5 +65,7 @@ Sources/
 
 | 環境 | 走査 | 走査中の問い合わせの最大待ち | ピーク RSS | ノード |
 |---|---|---|---|---|
-| GitHub Actions macos-latest（release） | 約 2.0 秒 | 約 0.01 秒 | 約 300 MB | 112 bytes |
+| GitHub Actions macos-15（release） | 約 2.0 秒 | 約 0.01 秒 | 約 300 MB | 112 bytes |
 | WSL2 Ubuntu 24.04（release） | 約 1.7 秒 | 約 0.05 秒 | 約 210 MB | 112 bytes |
+
+1つのフォルダに 200,000 ファイルがある場合（WSL2、release）、走査中に直下一覧を並べ替えている間も、別スレッドの項目取得の待ちは最大約 0.01 秒だった。

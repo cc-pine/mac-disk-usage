@@ -54,7 +54,7 @@ private struct ResultHeader: View {
                     Text(DisplayText.state(model.state, isStale: model.result?.isStale ?? false))
                         .foregroundStyle(stateColor)
                     if let root = model.scanRoot {
-                        Text("走査項目の集計: \(DisplayText.size(of: root))")
+                        Text("走査集計: \(DisplayText.size(of: root))")
                             .font(.callout)
                     }
                 }
@@ -85,8 +85,6 @@ private struct ResultHeader: View {
                 if model.result?.counts.problemItems ?? 0 > 0 {
                     PermissionGuidance()
                 }
-            } else if model.state == .cancelled, let note = model.result?.failureDescription {
-                Banner(text: note, color: .orange)
             } else if let problems = model.progress?.counts.problemItems, problems > 0 {
                 Banner(text: "情報を取得できなかった場所があります（アクセス拒否・読み取りエラー・クラウド上だけの項目など）。画面下の「情報を取得できなかった項目」から確認できます。", color: .orange)
             }
@@ -126,7 +124,7 @@ private struct Banner: View {
 struct AggregationExplanation: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("走査項目の集計はボリュームの使用量と一致しないことがあります")
+            Text("走査集計はボリュームの使用量と一致しないことがあります")
                 .font(.headline)
             Text("・読めなかった場所や、除外した場所（別ボリューム・別経路など）は集計に含まれません。")
             Text("・APFS のクローンやハードリンクは共有ブロックを区別せず、パスごとに数えます。")
@@ -241,7 +239,7 @@ private struct StatusFooter: View {
             }
             .buttonStyle(.link)
             .disabled(counts.excludedItems == 0)
-            .help("別ボリュームや別経路など、二重に数えないため走査しなかった場所。クリックで一覧を表示")
+            .help("別ボリューム・別経路・デバイス領域など、範囲の方針により走査しなかった場所（除外領域）。クリックで一覧を表示")
         }
     }
 

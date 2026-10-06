@@ -113,37 +113,6 @@ final class ScanCoordinatorTests: XCTestCase {
         XCTAssertEqual(late.map(\.state), [.completed])
     }
 
-    /// OS 呼び出しが戻らない場合でも、猶予を過ぎたら中止を確定し、次のスキャンを始められる。
-    func testStuckScanIsAbandonedAfterGracePeriod() async throws {
-        let fs = makeTree()
-        let gate = Gate()
-        let entered = DispatchSemaphore(value: 0)
-        fs.onList = { @Sendable path in
-            if path == "/data" {
-                entered.signal()
-                gate.wait()
-            }
-        }
-        var configuration = configuration()
-        configuration.cancelGracePeriod = 0.2
-        let coordinator = ScanCoordinator(provider: fs, configuration: configuration)
-        let scope = ScanScope(rootPath: "/data", kind: .folder)!
-        let stuck = try coordinator.start(scope: scope)
-        blockingWait(entered)
-        stuck.cancel()
-
-        let result = await stuck.waitUntilFinished()
-        XCTAssertEqual(result.state, .cancelled)
-        XCTAssertNotNil(result.failureDescription, "停止を確認できなかったことを伝える")
-
-        fs.onList = nil
-        let next = try coordinator.start(scope: scope)
-        gate.open()
-        let nextResult = await next.waitUntilFinished()
-        XCTAssertEqual(nextResult.state, .completed)
-        XCTAssertEqual(stuck.currentState, .cancelled, "後から戻った旧スキャンの状態は変わらない")
-    }
-
     func testCancelAfterFinishDoesNotChangeTerminalState() async throws {
         let coordinator = ScanCoordinator(provider: makeTree(), configuration: configuration())
         let session = try coordinator.start(scope: ScanScope(rootPath: "/data", kind: .folder)!)

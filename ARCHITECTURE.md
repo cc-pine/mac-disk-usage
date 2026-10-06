@@ -4,7 +4,7 @@
 
 Swift + SwiftUI を候補とし、スキャン処理・集計・画面表示・ファイル操作を分離する。表示方式が Treemap から Sunburst などに増えても、走査エンジンを変更せずに済む境界を設ける。
 
-振る舞いの基準は [REQUIREMENTS.md](REQUIREMENTS.md)、用語の基準は [CONTEXT.md](CONTEXT.md) とする。以下は未実装の設計案。
+振る舞いの基準は [REQUIREMENTS.md](REQUIREMENTS.md)、用語の基準は [CONTEXT.md](CONTEXT.md) とする。以下は実装前に立てた設計案で、初版はこれに沿って実装した。実装で決めた点と設計案との差分は第10節にまとめる。
 
 ```text
 SwiftUI Views
@@ -209,3 +209,41 @@ ScanFinished(scanID, revision, state, summary)
 - 保護対象パスの正確な定義。フォルダ等のゴミ箱移動は初版に含めない。
 - 大規模走査時にメモリ内索引をディスク上の索引へ切り替える基準。
 - 性能目標の評価環境と数値上限。基本のページングと更新キュー上限は初版から導入する。
+
+## 10. 実装との対応と差分
+
+初版の実装（`Sources/`）と上記の設計案との対応、および実装で決めた点。仮決定の理由は [DECISIONS.md](DECISIONS.md) に記録する。
+
+### モジュール
+
+| 設計案 | 実装 |
+|---|---|
+| UI / ScanViewModel | `DiskUsageApp`（SwiftUI）の `ScanViewModel`。並び順はサイズ順に固定し、切り替えは持たない |
+| ScanCoordinator | `ScanCoordinator`（同時スキャンの制限、スレッド構成、ゴミ箱移動との排他ゲート）と、1回のスキャンのライフサイクルを持つ `ScanSession` |
+| FileSystemScanner | `FileSystemScanner`（走査）、`POSIXFileSystem`（`lstat`・`open(O_NOFOLLOW)`・`fdopendir`・`fstatat`）、範囲を組み立てる `ScopeResolver` |
+| ScanStore / Aggregator | `ScanStore` が保存と集計を兼ねる。Aggregator は独立させていない |
+| ItemActionService | `ItemActionService`（可否判定・再確認・移動）と、保護対象パスの定義を持つ `TrashPolicy` |
+| AccessController | 実装しない（App Sandbox を無効にしたため） |
+| — | 画面の文言を組み立てる `DisplayText`、Treemap の配置を計算する `TreemapLayout` をコア層に置く |
+
+### イベントと UI 更新（第4節）
+
+- 保存用: スキャナーは `ScanRecord`（`item` / `directoryListed`）を件数または 100 ms ごとのバッチにまとめ、上限付きキューで保存スレッドへ渡す。
+- UI 用: `ScanSession.makeUpdates()` が購読者ごとに `ScanProgress` を流す。最新の値だけを保持し、250 ms ごとに版・状態・古い結果かどうかが変わったときだけ送る。終端の進捗を送った後にストリームは終わる。
+- 終端の結果: `waitUntilFinished()` が `ScanResult` を返す。終端は、全バッチの保存と大きなファイル一覧の全件索引の作成の後に確定する。
+- 一覧・Treemap の問い合わせは MainActor の外で行い、スキャン ID と問い合わせ条件が現在のものと一致するときだけ反映する。
+
+### サイズと範囲（第2・5節）
+
+- サイズの取得元は `fileSize` / `totalFileAllocatedSize` ではなく、`lstat` の `st_size` と `st_blocks × 512` とした。
+- 起動ディスク上のフォルダを選んだ場合も System / Data のデバイスを組で許可し、配下の除外規則を引き継ぐ。
+- 大きなファイル一覧は、スキャン中は上位 10,000 件の暫定索引から返し、確定後に全件の索引を一度だけ作る。
+
+### ゴミ箱移動（第7節）
+
+設計案の再確認に加えて、スキャンルートより上のフォルダがリンクに置き換わっていないこと、移動の参照（ファイル参照 URL）が確認した項目を指していること、移動後に元の場所が空いたことを確かめる。手順は [DECISIONS.md](DECISIONS.md) の「移動の手順」に記載する。
+
+### 未解決
+
+- 応答しない OS 呼び出しでキャンセルの確定を待ち続ける場合の扱い（[DECISIONS.md](DECISIONS.md) の「キャンセルと停止の確定」）。
+- 画面操作での確認（[TASKS.md](TASKS.md)）。

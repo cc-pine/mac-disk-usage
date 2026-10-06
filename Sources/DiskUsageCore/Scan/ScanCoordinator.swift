@@ -28,8 +28,6 @@ public final class ScanCoordinator: @unchecked Sendable {
         public var queueCapacity: Int = 16
         public var batchSize: Int = 1024
         public var provisionalFileLimit: Int = 10_000
-        /// キャンセル後、走査スレッドの停止を待つ上限
-        public var cancelGracePeriod: TimeInterval = 5
 
         public init() {}
     }
@@ -94,11 +92,7 @@ public final class ScanCoordinator: @unchecked Sendable {
             lock.unlock()
             throw ScanCoordinatorError.scanInProgress
         }
-        let session = ScanSession(
-            scope: scope,
-            provisionalFileLimit: configuration.provisionalFileLimit,
-            cancelGracePeriod: configuration.cancelGracePeriod
-        )
+        let session = ScanSession(scope: scope, provisionalFileLimit: configuration.provisionalFileLimit)
         currentSession = session
         lock.unlock()
 
