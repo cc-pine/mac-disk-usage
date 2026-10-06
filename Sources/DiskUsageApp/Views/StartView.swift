@@ -10,7 +10,7 @@ struct StartView: View {
         @Bindable var model = model
         VStack(alignment: .leading, spacing: 0) {
             List(selection: $model.selectedTarget) {
-                Section("ボリューム") {
+                Section(L10n.sectionVolumes) {
                     ForEach(model.volumes) { volume in
                         VolumeRow(volume: volume)
                             .tag(ScanTarget.volume(volume))
@@ -18,7 +18,7 @@ struct StartView: View {
                 }
                 // 選んだフォルダは、別の対象を選んでも一覧に残す
                 if let url = model.chosenFolder {
-                    Section("フォルダ") {
+                    Section(L10n.sectionFolder) {
                         Label(FileManager.default.displayName(atPath: url.path), systemImage: "folder")
                             .help(url.path)
                             .tag(ScanTarget.folder(url))
@@ -32,10 +32,10 @@ struct StartView: View {
                 Button {
                     choosingFolder = true
                 } label: {
-                    Label("フォルダを選択…", systemImage: "folder.badge.plus")
+                    Label(L10n.chooseFolder, systemImage: "folder.badge.plus")
                 }
                 if let target = model.selectedTarget {
-                    Text("対象: \(target.displayName)")
+                    Text(L10n.target(target.displayName))
                         .font(.callout)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -45,16 +45,22 @@ struct StartView: View {
                     Button {
                         model.requestStartScan()
                     } label: {
-                        Text(model.isScanActive ? "対象を変えてスキャン" : "スキャン")
+                        Text(model.isScanActive ? L10n.scanAnotherTarget : L10n.scan)
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.canStartScan)
-                    .help(model.isScanActive ? "実行中のスキャンを中止してから、選んだ対象をスキャンします" : "選んだ対象をスキャンします")
+                    .help(model.isScanActive ? L10n.scanAnotherTargetHelp : L10n.scanHelp)
                 }
                 if model.isPreparingScan {
-                    ProgressView("前のスキャンの停止を待っています…")
+                    ProgressView(L10n.waitingForPreviousScan)
                         .controlSize(.small)
+                    if model.state == .cancelling {
+                        // 前のスキャンの停止待ちが続く場合も、ここから強制中止できるようにする
+                        ForceStopButton(requestedAt: model.cancelRequestedAt) {
+                            model.forceStopScan()
+                        }
+                    }
                 }
             }
             .padding(12)
@@ -69,9 +75,9 @@ struct StartView: View {
                 Button {
                     model.loadVolumes()
                 } label: {
-                    Label("ボリュームを再読み込み", systemImage: "arrow.clockwise")
+                    Label(L10n.reloadVolumes, systemImage: "arrow.clockwise")
                 }
-                .help("ボリューム一覧と容量情報を更新します")
+                .help(L10n.reloadVolumesHelp)
             }
         }
     }
@@ -94,10 +100,10 @@ private struct VolumeRow: View {
     private var capacityText: String {
         let capacity = volume.capacity
         guard let total = capacity.totalBytes else {
-            return "容量情報を取得できません"
+            return L10n.capacityUnavailable
         }
-        let used = capacity.usedBytes.map { "使用 \(ByteFormatting.string($0))" } ?? "使用量不明"
-        let available = capacity.availableBytes.map { "空き \(ByteFormatting.string($0))" } ?? "空き容量不明"
-        return "\(used) / 全体 \(ByteFormatting.string(total))・\(available)（\(DisplayText.time(capacity.fetchedAt)) 時点）"
+        let used = capacity.usedBytes.map { L10n.used(ByteFormatting.string($0)) } ?? L10n.usedUnknown
+        let available = capacity.availableBytes.map { L10n.available(ByteFormatting.string($0)) } ?? L10n.availableUnknown
+        return L10n.volumeRow(used: used, total: ByteFormatting.string(total), available: available, time: DisplayText.time(capacity.fetchedAt))
     }
 }

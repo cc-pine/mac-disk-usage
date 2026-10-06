@@ -23,19 +23,19 @@ public enum TrashBlockReason: Error, Equatable, Sendable {
 
     public var message: String {
         switch self {
-        case .scanNotFinished: return "スキャン中と、スキャンの中止処理中は移動できません。"
-        case .operationInProgress: return "別のゴミ箱操作を実行中です。"
-        case .notRegularFile: return "移動できるのは通常のファイルだけです。"
-        case .unreadable: return "項目を読み取れなかったため移動できません。"
-        case .scanRoot: return "スキャン対象そのものは移動できません。"
-        case .protectedLocation(let root): return "保護された場所（\(root)）の項目は移動できません。"
-        case .insidePackage: return "アプリなどのパッケージ内部の項目は移動できません。"
-        case .outsideScope: return "スキャン範囲外の項目は移動できません。"
-        case .unsafePath: return "場所を安全に確認できないため移動できません。"
-        case .identityUnavailable: return "項目を識別できないため移動できません。"
-        case .multipleHardLinks: return "ほかの場所からも参照されている（ハードリンクがある）ファイルは移動できません。"
-        case .alreadyMoved: return "この項目は移動済みです。"
-        case .notInCurrentResult: return "現在のスキャン結果に含まれない項目です。"
+        case .scanNotFinished: return L10n.trashScanNotFinished
+        case .operationInProgress: return L10n.trashOperationInProgress
+        case .notRegularFile: return L10n.trashNotRegularFile
+        case .unreadable: return L10n.trashUnreadable
+        case .scanRoot: return L10n.trashScanRoot
+        case .protectedLocation(let root): return L10n.trashProtected(root)
+        case .insidePackage: return L10n.trashInsidePackage
+        case .outsideScope: return L10n.trashOutsideScope
+        case .unsafePath: return L10n.trashUnsafePath
+        case .identityUnavailable: return L10n.trashIdentityUnavailable
+        case .multipleHardLinks: return L10n.trashMultipleHardLinks
+        case .alreadyMoved: return L10n.trashAlreadyMoved
+        case .notInCurrentResult: return L10n.trashNotInCurrentResult
         }
     }
 }

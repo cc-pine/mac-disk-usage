@@ -11,7 +11,7 @@ struct LargeFilesView: View {
             if let page = model.largeFiles {
                 if page.totalCount == 0 {
                     ContentUnavailableView(
-                        model.isScanActive ? "まだファイルが見つかっていません" : "ファイルがありません",
+                        model.isScanActive ? L10n.noFilesYet : L10n.noFiles,
                         systemImage: "doc"
                     )
                 } else {

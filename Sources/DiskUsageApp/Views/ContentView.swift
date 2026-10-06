@@ -13,9 +13,9 @@ struct ContentView: View {
         } detail: {
             if model.session == nil {
                 ContentUnavailableView(
-                    "スキャン対象を選択してください",
+                    L10n.chooseTarget,
                     systemImage: "internaldrive",
-                    description: Text("左の一覧からボリュームまたはフォルダを選択し、「スキャン」をクリックします。")
+                    description: Text(L10n.chooseTargetDetail)
                 )
             } else {
                 ResultView()
@@ -31,36 +31,36 @@ struct ContentView: View {
                     Button {
                         showsInspector.toggle()
                     } label: {
-                        Label("詳細", systemImage: "sidebar.right")
+                        Label(L10n.details, systemImage: "sidebar.right")
                     }
-                    .help("詳細パネルの表示を切り替えます")
+                    .help(L10n.detailsHelp)
                 }
             }
         }
         .alert(item: $model.message) { message in
-            Alert(title: Text(message.title), message: Text(message.detail), dismissButton: .default(Text("OK")))
+            Alert(title: Text(message.title), message: Text(message.detail), dismissButton: .default(Text(L10n.ok)))
         }
         .confirmationDialog(
-            "実行中のスキャンを中止して、選んだ対象をスキャンしますか？",
+            L10n.switchScanTitle,
             isPresented: $model.isSwitchConfirmationPresented
         ) {
-            Button("中止してスキャン") {
+            Button(L10n.switchScanConfirm) {
                 Task { await model.startScan() }
             }
-            Button("スキャンを続ける", role: .cancel) {}
+            Button(L10n.switchScanKeep, role: .cancel) {}
         } message: {
-            Text("ここまでの結果は破棄され、新しい対象の結果に置き換わります。")
+            Text(L10n.switchScanDetail)
         }
         .confirmationDialog(
-            "ゴミ箱へ移動しますか？",
+            L10n.trashConfirmTitle,
             isPresented: $model.isTrashDialogPresented,
             presenting: model.pendingTrash
         ) { candidate in
-            Button("ゴミ箱へ移動", role: .destructive) {
+            Button(L10n.trashConfirmButton, role: .destructive) {
                 // ダイアログが閉じると pendingTrash は消えるため、表示していた値をそのまま渡す
                 Task { await model.confirmTrash(candidate) }
             }
-            Button("キャンセル", role: .cancel) {
+            Button(L10n.cancel, role: .cancel) {
                 model.cancelTrash()
             }
         } message: { candidate in
@@ -69,12 +69,10 @@ struct ContentView: View {
     }
 
     private func trashMessage(_ candidate: TrashCandidate) -> String {
-        """
-        名前: \(DisplayText.visible(candidate.name))
-        場所: \(DisplayText.visible(candidate.path))
-        割り当て済みサイズ: \(ByteFormatting.string(candidate.allocatedSize))
-
-        ゴミ箱へ移動するだけで、項目は完全には削除されません。空き容量がこのサイズ分増えるとは限りません。
-        """
+        L10n.trashConfirmMessage(
+            name: DisplayText.visible(candidate.name),
+            path: DisplayText.visible(candidate.path),
+            size: ByteFormatting.string(candidate.allocatedSize)
+        )
     }
 }

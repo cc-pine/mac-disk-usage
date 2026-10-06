@@ -97,11 +97,11 @@ public enum TrashFailure: Error, Equatable, Sendable {
     public var message: String {
         switch self {
         case .blocked(let reason): return reason.message
-        case .changedSinceScan(let detail): return "スキャン後に項目が変わったため中止しました（\(detail)）。再スキャンしてから選び直してください。"
+        case .changedSinceScan(let detail): return L10n.trashChangedSinceScan(detail)
         case .systemRefused(let detail): return detail
-        case .cannotVerify(let detail): return "移動前に項目を確認できなかったため、中止しました。詳細: \(detail)"
-        case .unexpectedItemMoved(let path): return "選んだ項目がゴミ箱へ移動したことを確認できませんでした。元の場所に残っているか、別の項目が移動した可能性があります。ゴミ箱（\(path ?? "場所不明")）と元の場所を確認し、必要に応じて元に戻してください。"
-        case .unsupported: return "この環境ではゴミ箱へ移動できません。"
+        case .cannotVerify(let detail): return L10n.trashCannotVerify(detail)
+        case .unexpectedItemMoved(let path): return L10n.trashUnexpectedItemMoved(path)
+        case .unsupported: return L10n.trashUnsupported
         }
     }
 }
@@ -231,7 +231,7 @@ public final class ItemActionService: @unchecked Sendable {
         case .failure(let reason):
             return .failure(.blocked(reason))
         case .success(let fresh) where fresh != candidate:
-            return .failure(.changedSinceScan("結果の内容が変わりました"))
+            return .failure(.changedSinceScan(L10n.verifyResultChanged))
         case .success:
             break
         }
@@ -243,7 +243,7 @@ public final class ItemActionService: @unchecked Sendable {
         }
         // 参照が、確認した場所の項目を指したままかを確かめる（参照を作った後で差し替わっていないか）
         guard trasher.currentPath(of: target) == candidate.path else {
-            return .failure(.changedSinceScan("移動の参照先が確認した項目と一致しません"))
+            return .failure(.changedSinceScan(L10n.verifyReferenceMismatch))
         }
 
         let trashedPath: String?
@@ -303,17 +303,17 @@ public final class ItemActionService: @unchecked Sendable {
         let store = session.store
         func unreadable(_ what: String, _ error: FileSystemError) -> TrashFailure {
             error.kind == .notFound
-                ? .changedSinceScan("\(what)が見つかりません")
-                : .cannotVerify("\(what)を確認できません: \(error.message)")
+                ? .changedSinceScan(L10n.verifyNotFound(what))
+                : .cannotVerify(L10n.verifyCannotCheck(what, error.message))
         }
 
         var cursor = PathUtilities.parent(of: session.scope.rootPath)
         while let path = cursor, path != "/" {
             switch provider.metadata(atPath: path) {
             case .failure(let error):
-                return unreadable("スキャン対象より上のフォルダ", error)
+                return unreadable(L10n.verifyFolderAboveRoot, error)
             case .success(let metadata) where metadata.kind != .directory:
-                return .changedSinceScan("スキャン対象より上のフォルダがフォルダではなくなりました: \(path)")
+                return .changedSinceScan(L10n.verifyFolderAboveRootNotFolder(path))
             case .success:
                 break
             }
@@ -324,38 +324,38 @@ public final class ItemActionService: @unchecked Sendable {
             guard let ancestor = store.item(ancestorID),
                   let path = store.path(of: ancestorID),
                   let expected = ancestor.fileIdentity else {
-                return .cannotVerify("親フォルダを識別できません")
+                return .cannotVerify(L10n.verifyParentUnidentified)
             }
             switch provider.metadata(atPath: path) {
             case .failure(let error):
-                return unreadable("親フォルダ", error)
+                return unreadable(L10n.verifyParentFolder, error)
             case .success(let metadata):
                 guard metadata.kind == .directory else {
-                    return .changedSinceScan("親フォルダがフォルダではなくなりました: \(path)")
+                    return .changedSinceScan(L10n.verifyParentNotFolder(path))
                 }
                 guard metadata.identity == expected else {
-                    return .changedSinceScan("親フォルダが置き換わりました: \(path)")
+                    return .changedSinceScan(L10n.verifyParentReplaced(path))
                 }
             }
         }
         guard let item = store.item(candidate.itemID) else {
-            return .cannotVerify("結果から項目が見つかりません")
+            return .cannotVerify(L10n.verifyItemMissingFromResult)
         }
         switch provider.metadata(atPath: candidate.path) {
         case .failure(let error):
-            return unreadable("項目", error)
+            return unreadable(L10n.verifyItem, error)
         case .success(let metadata):
             guard metadata.kind == .file else {
-                return .changedSinceScan("通常ファイルではなくなりました")
+                return .changedSinceScan(L10n.verifyNoLongerFile)
             }
             guard metadata.identity == candidate.identity else {
-                return .changedSinceScan("別の項目に置き換わりました")
+                return .changedSinceScan(L10n.verifyReplaced)
             }
             guard (metadata.linkCount ?? 1) <= 1 else {
-                return .changedSinceScan("ハードリンクが作られました")
+                return .changedSinceScan(L10n.verifyHardLinkCreated)
             }
             guard metadata.logicalSize == item.logicalSize, metadata.modifiedDate == item.modifiedDate else {
-                return .changedSinceScan("内容が更新されました")
+                return .changedSinceScan(L10n.verifyContentChanged)
             }
         }
         return nil

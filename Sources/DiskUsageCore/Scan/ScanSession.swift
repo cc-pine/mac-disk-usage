@@ -13,6 +13,8 @@ public struct ScanResult: Equatable, Sendable {
     public let isStale: Bool
     /// ルートを列挙できなかった場合などの短い説明
     public let failureDescription: String?
+    /// 停止の確認を待たずに、利用者の操作で中止を確定した
+    public let wasForceStopped: Bool
 }
 
 /// 1回のスキャン。ライフサイクルと終端状態の確定を一元化する。
@@ -31,6 +33,8 @@ public final class ScanSession: @unchecked Sendable {
     private let lock = NSRecursiveLock()
     private var state: ScanState = .scanning
     private var cancelRequested = false
+    private var wasForceStopped = false
+    private var finishHandlers: [@Sendable () -> Void] = []
     private var isStale = false
     private var failureDescription: String?
     private let startedAt = Date()
@@ -108,6 +112,34 @@ public final class ScanSession: @unchecked Sendable {
         publish(force: true)
     }
 
+    /// 停止を待っている（`cancelling` の）間だけ、利用者の明示操作で中止を確定する。
+    ///
+    /// 応答しないネットワークマウントなどで OS 呼び出しが戻らない場合の逃げ道。取得済みの結果で
+    /// `cancelled` を確定し、次のスキャンを始められるようにする。止まっていない走査スレッドが
+    /// 後から届ける結果は、確定済みのストアに保存されない（REQUIREMENTS §6）。
+    public func forceStop() {
+        lock.lock()
+        guard state == .cancelling else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        finish(termination: .cancelled, forced: true)
+    }
+
+    /// 終端状態が確定したときに一度だけ呼ぶ処理を登録する（進捗タイマーの停止など）。
+    /// すでに確定していれば、その場で呼ぶ。
+    func onFinish(_ handler: @escaping @Sendable () -> Void) {
+        lock.lock()
+        if state.isTerminal {
+            lock.unlock()
+            handler()
+            return
+        }
+        finishHandlers.append(handler)
+        lock.unlock()
+    }
+
     /// ゴミ箱移動などの後で、結果が古いことを記録する。走査完了という事実は変えない。
     public func markStale() {
         lock.lock()
@@ -153,7 +185,8 @@ public final class ScanSession: @unchecked Sendable {
     }
 
     /// 終端状態を一度だけ確定する。保存と集計の確定後に呼ぶ。
-    func finish(termination: ScanTermination) {
+    /// - Parameter forced: 利用者の強制中止による確定。確定がほかの経路と競合した場合は、先に確定した側が残る
+    func finish(termination: ScanTermination, forced: Bool = false) {
         store.finalize()
         // 大きなファイル一覧の全件索引を、終端を通知する前にこのスレッドで作っておく
         store.prepareFileIndex()
@@ -165,6 +198,11 @@ public final class ScanSession: @unchecked Sendable {
             lock.unlock()
             return
         }
+        if forced {
+            wasForceStopped = true
+        }
+        let handlers = finishHandlers
+        finishHandlers.removeAll()
         let next: ScanState
         if cancelRequested {
             next = .cancelled
@@ -198,6 +236,9 @@ public final class ScanSession: @unchecked Sendable {
 
         for waiter in waiters {
             waiter.resume(returning: result)
+        }
+        for handler in handlers {
+            handler()
         }
     }
 
@@ -241,7 +282,8 @@ public final class ScanSession: @unchecked Sendable {
             revision: stats.revision,
             counts: stats.counts,
             isStale: isStale,
-            failureDescription: failureDescription
+            failureDescription: failureDescription,
+            wasForceStopped: wasForceStopped
         )
     }
 }
