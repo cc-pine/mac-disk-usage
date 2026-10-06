@@ -15,6 +15,10 @@ final class RecordingTrasher: Trasher, @unchecked Sendable {
     var leaveOriginal = false
     /// 設定すると、参照が別の場所を指していることにする（参照作成後の差し替えの再現用）
     var resolvedPathOverride: String?
+    /// 設定すると、移動の途中でゲートが開くまで待つ（同時操作の再現用）
+    var gate: Gate?
+    /// 移動処理に入ったことを知らせる
+    let entered = DispatchSemaphore(value: 0)
 
     init(fileSystem: MockFileSystem) {
         self.fileSystem = fileSystem
@@ -27,6 +31,11 @@ final class RecordingTrasher: Trasher, @unchecked Sendable {
     }
 
     func moveToTrash(_ target: TrashTarget) throws -> String? {
+        entered.signal()
+        lock.lock()
+        let gate = self.gate
+        lock.unlock()
+        gate?.wait()
         lock.lock()
         defer { lock.unlock() }
         if let error {

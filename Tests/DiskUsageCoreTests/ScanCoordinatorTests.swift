@@ -23,13 +23,24 @@ final class ScanCoordinatorTests: XCTestCase {
     }
 
     func testCompletesAndPublishesTerminalEventLast() async throws {
-        let coordinator = ScanCoordinator(provider: makeTree(), configuration: configuration())
+        // 購読してから走査を進め、途中の進捗と終端の順序を実際に観察する
+        let fs = makeTree()
+        let gate = Gate()
+        fs.onList = { @Sendable path in
+            if path == "/data" { gate.wait() }
+        }
+        let coordinator = ScanCoordinator(provider: fs, configuration: configuration())
         let session = try coordinator.start(scope: ScanScope(rootPath: "/data", kind: .folder)!)
+        let updates = session.makeUpdates()
+        gate.open()
 
         var events: [ScanProgress] = []
-        for await progress in session.makeUpdates() {
+        for await progress in updates {
             events.append(progress)
         }
+        XCTAssertGreaterThanOrEqual(events.count, 2, "走査中の進捗と終端を受け取る")
+        XCTAssertEqual(events.map { $0.revision }, events.map { $0.revision }.sorted(), "版は戻らない")
+        XCTAssertEqual(events.map { $0.counts.files }, events.map { $0.counts.files }.sorted(), "件数は減らない")
         let result = await session.waitUntilFinished()
 
         XCTAssertEqual(result.state, .completed)
@@ -147,6 +158,30 @@ final class ScanCoordinatorTests: XCTestCase {
         }
         wait(for: [produced], timeout: 5)
         XCTAssertEqual(received, Array(0..<100))
+    }
+
+    func testBoundedQueueProducerWaitsWhenFullAndCloseWakesIt() {
+        let queue = BoundedQueue<Int>(capacity: 2)
+        XCTAssertTrue(queue.put(1))
+        XCTAssertTrue(queue.put(2))
+        let thirdPut = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            queue.put(3)
+            thirdPut.signal()
+        }
+        XCTAssertEqual(thirdPut.wait(timeout: .now() + 0.2), .timedOut, "満杯の間は追加を待たせる")
+        XCTAssertEqual(queue.take(), 1)
+        XCTAssertEqual(thirdPut.wait(timeout: .now() + 5), .success, "空きができたら追加が進む")
+
+        let blocked = DispatchSemaphore(value: 0)
+        // いまは 2 と 3 で満杯。待っている生産者は close で起こされ、追加せずに失敗を返す
+        DispatchQueue.global().async {
+            XCTAssertFalse(queue.put(5), "閉じられた追加は失敗する")
+            blocked.signal()
+        }
+        queue.close()
+        XCTAssertEqual(blocked.wait(timeout: .now() + 5), .success, "close は待っている生産者を起こす")
+        XCTAssertEqual([queue.take(), queue.take(), queue.take()], [2, 3, nil], "閉じても残りは取り出せる")
     }
 }
 
