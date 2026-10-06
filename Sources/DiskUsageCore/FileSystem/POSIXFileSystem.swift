@@ -23,6 +23,20 @@ public struct POSIXFileSystem: FileSystemProvider {
         #endif
     }
 
+    /// クラウド上にのみあるフォルダの一覧を取る間だけ、このスレッドの取得抑止を外す（2026-10-07 決定）。
+    /// ファイルの内容は開かないため、取得されるのはフォルダの一覧（名前とメタデータ）だけ。
+    private static func withDatalessListingAllowed<T>(_ isDataless: Bool, _ body: () -> T) -> T {
+        #if os(macOS)
+        guard isDataless else { return body() }
+        // IOPOL_MATERIALIZE_DATALESS_FILES_ON(2)
+        _ = setiopolicy_np(3, 1, 2)
+        defer { _ = setiopolicy_np(3, 1, 1) }
+        return body()
+        #else
+        return body()
+        #endif
+    }
+
     public func metadata(atPath path: String) -> Result<FileMetadata, FileSystemError> {
         var info = stat()
         guard lstat(path, &info) == 0 else {
@@ -58,6 +72,12 @@ public struct POSIXFileSystem: FileSystemProvider {
             close(fd)
             return .failure(FileSystemError(kind: .changed, code: 0, message: L10n.errorReplacedDuringScan))
         }
+        return Self.withDatalessListingAllowed(Self.isDataless(opened)) {
+            Self.readEntries(fd: fd, path: path, isCancelled: isCancelled)
+        }
+    }
+
+    private static func readEntries(fd: Int32, path: String, isCancelled: () -> Bool) -> Result<DirectoryListing, FileSystemError> {
         guard let dir = fdopendir(fd) else {
             let code = errno
             close(fd)
@@ -111,10 +131,9 @@ public struct POSIXFileSystem: FileSystemProvider {
             metadata.allocatedSize = overflow || allocated < 0 ? nil : allocated
         }
         if kind == .directory {
-            if metadata.isDataless {
-                // 取得を伴う問い合わせを避ける。判定できないものとして扱う
-                metadata.isPackageUnknown = true
-            } else if let isPackage = isPackage(packagePath) {
+            // クラウド上にのみあるフォルダ（Pages の書類などのパッケージを含む）でも判定する。
+            // 判定は取得抑止をかけたまま行うため、取得が必要なら失敗し、判定不能（パッケージ扱い）になる
+            if let isPackage = isPackage(packagePath) {
                 metadata.isPackage = isPackage
             } else {
                 metadata.isPackageUnknown = true

@@ -243,9 +243,13 @@ final class ScanViewModel {
         // realpath と lstat を伴うため MainActor の外で解決する
         let path = target.path
         let isVolume = target.isVolume
-        let resolved = await Task.detached(priority: .userInitiated) {
-            ScopeResolver.scope(forPath: path, isVolume: isVolume)
+        let (isNetwork, resolved) = await Task.detached(priority: .userInitiated) {
+            (ScopeResolver.isOnNetworkVolume(path), ScopeResolver.scope(forPath: path, isVolume: isVolume))
         }.value
+        if isNetwork {
+            message = UserMessage(title: L10n.cannotStartScan, detail: L10n.networkNotSupported)
+            return
+        }
         guard let scope = resolved else {
             message = UserMessage(title: L10n.cannotStartScan, detail: L10n.targetNotFound(target.displayName))
             return

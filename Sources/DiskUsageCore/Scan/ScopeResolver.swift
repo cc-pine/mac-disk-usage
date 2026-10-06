@@ -57,6 +57,17 @@ public enum ScopeResolver {
         return ScanScope(rootPath: canonical, kind: kind)
     }
 
+    /// ネットワーク上のボリューム（SMB・NFS など）にある場所か。初版では解析の対象外とする（2026-10-07 決定）。
+    /// 判定できない場合はローカルとみなす。
+    public static func isOnNetworkVolume(_ path: String) -> Bool {
+        #if os(macOS)
+        let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeIsLocalKey])
+        return values?.volumeIsLocal == false
+        #else
+        return false
+        #endif
+    }
+
     /// realpath による実体パス。解決できなければ nil。
     public static func canonicalPath(_ path: String) -> String? {
         guard let resolved = realpath(path, nil) else { return nil }

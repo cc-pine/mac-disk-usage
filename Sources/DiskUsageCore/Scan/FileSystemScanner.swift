@@ -66,20 +66,14 @@ public struct FileSystemScanner: Sendable {
             return .rootFailed(error)
         }
 
-        // クラウド上だけにあるフォルダは、列挙すると取得が始まるためルートでも開かない
-        let rootIsCloudOnly = rootMetadata.kind == .directory && rootMetadata.isDataless
+        // クラウド上にのみあるフォルダも、中身の一覧を取得して走査する（ファイルの内容は取得しない）
         emitter.emit(.item(DiscoveredItem(
             id: rootID, parentID: nil, name: scope.displayName, kind: rootMetadata.kind,
             isPackage: rootMetadata.mayBePackage,
             logicalSize: rootMetadata.logicalSize, allocatedSize: rootMetadata.allocatedSize,
             modifiedDate: rootMetadata.modifiedDate, createdDate: rootMetadata.createdDate,
-            accessState: rootIsCloudOnly ? .notScanned : .readable,
-            fileIdentity: rootMetadata.identity,
-            errorDescription: rootIsCloudOnly ? L10n.errorCloudOnlyFolder : nil
+            fileIdentity: rootMetadata.identity
         )))
-        if rootIsCloudOnly {
-            return .rootFailed(FileSystemError(kind: .cloudOnly, code: 0, message: L10n.errorCloudOnlyRoot))
-        }
         guard rootMetadata.kind == .directory else {
             let error = FileSystemError(kind: .other, code: 0, message: L10n.errorNotAFolder)
             return .rootFailed(error)
@@ -133,18 +127,15 @@ public struct FileSystemScanner: Sendable {
                             allowedDevices: allowedDevices, visited: &visited
                         )
                         : nil
-                    // クラウド上だけのフォルダは列挙すると取得が始まるため、未走査として残す
-                    let cloudOnly = isDirectory && exclusion == nil && metadata.isDataless
+                    // クラウド上にのみあるフォルダも、一覧を取得して走査する（提供側が一覧を取得する）
                     emitter.emit(.item(DiscoveredItem(
                         id: id, parentID: directory.id, name: entry.name, kind: metadata.kind,
                         isPackage: metadata.mayBePackage,
                         logicalSize: metadata.logicalSize, allocatedSize: metadata.allocatedSize,
                         modifiedDate: metadata.modifiedDate, createdDate: metadata.createdDate,
-                        accessState: cloudOnly ? .notScanned : .readable,
-                        fileIdentity: metadata.identity, exclusionReason: exclusion,
-                        errorDescription: cloudOnly ? L10n.errorCloudOnlyFolder : nil
+                        fileIdentity: metadata.identity, exclusionReason: exclusion
                     )))
-                    if isDirectory, exclusion == nil, !cloudOnly {
+                    if isDirectory, exclusion == nil {
                         stack.append((id, path, metadata.identity))
                     }
                 }

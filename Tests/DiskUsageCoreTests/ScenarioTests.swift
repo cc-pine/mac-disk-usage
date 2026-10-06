@@ -199,7 +199,7 @@ final class ScenarioTests: XCTestCase {
         let unknownSize = try await finalState { $0.file("/r/u", allocated: nil) }
         XCTAssertEqual(unknownSize, .completedWithErrors)
         let cloudOnly = try await finalState { $0.dir("/r/cloud", isDataless: true) }
-        XCTAssertEqual(cloudOnly, .completedWithErrors)
+        XCTAssertEqual(cloudOnly, .completed, "クラウド上にのみあるフォルダも一覧を取得できれば完了")
     }
 
     func testUsedBytesNeedsBothValues() {

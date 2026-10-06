@@ -15,11 +15,15 @@ struct VolumeEntry: Identifiable, Hashable {
 
     /// macOS が報告するマウント済みボリューム。隠しボリュームは除く。
     static func mountedVolumes(now: Date = Date()) -> [VolumeEntry] {
-        let keys: [URLResourceKey] = [.volumeNameKey, .volumeIsBrowsableKey]
+        let keys: [URLResourceKey] = [.volumeNameKey, .volumeIsBrowsableKey, .volumeIsLocalKey]
         let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
         return urls.compactMap { url -> VolumeEntry? in
             let values = try? url.resourceValues(forKeys: Set(keys))
             if values?.volumeIsBrowsable == false {
+                return nil
+            }
+            // ネットワーク上のボリュームは解析の対象外なので一覧に出さない
+            if values?.volumeIsLocal == false {
                 return nil
             }
             let path = PathUtilities.normalize(url.path)

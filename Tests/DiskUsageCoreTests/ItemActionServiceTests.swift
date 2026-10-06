@@ -272,6 +272,27 @@ final class ItemActionServiceTests: XCTestCase {
         XCTAssertNotNil(try? service.candidate(for: id(session, "/Users/me/work/disk/data.bin"), in: session).get())
     }
 
+    func testCachesUnderHomeLibraryAreAllowed() async throws {
+        fs.dir("/Users/me/Library/Caches").dir("/Users/me/Library/Caches/com.example").file("/Users/me/Library/Caches/com.example/blob", allocated: 9)
+        fs.dir("/Users/me/Library/Developer").dir("/Users/me/Library/Developer/Xcode").dir("/Users/me/Library/Developer/Xcode/DerivedData")
+        fs.file("/Users/me/Library/Developer/Xcode/DerivedData/build.o", allocated: 9)
+        fs.dir("/Users/me/Library/Developer/Xcode/Archives").file("/Users/me/Library/Developer/Xcode/Archives/app.xcarchive.zip", allocated: 9)
+        fs.dir("/Users/other/Library/Caches").file("/Users/other/Library/Caches/x", allocated: 1)
+        let session = try await completedSession(root: "/Users")
+        let service = service()
+        XCTAssertNotNil(try? service.candidate(for: id(session, "/Users/me/Library/Caches/com.example/blob"), in: session).get())
+        XCTAssertNotNil(try? service.candidate(for: id(session, "/Users/me/Library/Developer/Xcode/DerivedData/build.o"), in: session).get())
+        XCTAssertEqual(
+            service.candidate(for: id(session, "/Users/me/Library/Developer/Xcode/Archives/app.xcarchive.zip"), in: session),
+            .failure(.protectedLocation("/Users/*/Library")), "キャッシュ以外の Library は保護したまま"
+        )
+        XCTAssertEqual(
+            service.candidate(for: id(session, "/Users/other/Library/Caches/x"), in: session),
+            .failure(.protectedLocation("/Users/*/Library")), "ほかのユーザーのキャッシュは対象外"
+        )
+        XCTAssertEqual(service.candidate(for: id(session, "/Users/me/Library/Caches"), in: session), .failure(.notRegularFile))
+    }
+
     func testRejectsHardLinkedFiles() async throws {
         let session = try await completedSession(root: "/Users/me/work")
         var metadata = try fs.metadata(atPath: "/Users/me/work/big.mov").get()

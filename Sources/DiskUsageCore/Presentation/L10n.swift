@@ -63,7 +63,7 @@ public enum L10n {
     public static var accessDenied: String { t("アクセス拒否", "Access denied") }
     public static var accessError: String { t("読み取りエラー", "Read error") }
     public static var accessNotScanned: String { t("未走査", "Not scanned") }
-    public static var accessNotScannedCloud: String { t("未走査（クラウド上のみなど）", "Not scanned (cloud only, for example)") }
+    public static var accessNotScannedCloud: String { t("未走査（クラウド上のみで一覧を取得できないなど）", "Not scanned (for example, a cloud-only folder that couldn’t be listed)") }
     public static var traversalScanning: String { t("スキャン中", "Scanning") }
     public static var traversalPartial: String { t("一部のみ走査", "Partially scanned") }
     public static var listSeparator: String { t("・", " · ") }
@@ -92,13 +92,11 @@ public enum L10n {
     public static var errorReplacedDuringScan: String { t("走査中に別の項目へ置き換わりました", "It was replaced by another item during the scan") }
     public static var errorPermissionDenied: String { t("アクセスが拒否されました", "Access was denied") }
     public static var errorNotFound: String { t("見つかりません。走査中に移動・削除された可能性があります", "Not found. It may have been moved or deleted during the scan") }
-    public static var errorCloudOnlyItem: String { t("クラウド上にのみある項目です", "This item is only in the cloud") }
+    public static var errorCloudOnlyItem: String { t("クラウド上にのみあり、一覧を取得できませんでした", "This item is only in the cloud, and its contents couldn’t be listed") }
     public static var errorPathTooLong: String { t("パスが長すぎるため読み取れません", "The path is too long to read") }
     public static var errorDiskIO: String { t("ディスクの読み取りでエラーが起きました", "An error occurred while reading the disk") }
     public static var errorTimedOut: String { t("応答がないため読み取れませんでした", "Could not read because there was no response") }
     public static func errorReadFailed(_ detail: String) -> String { t("読み取りに失敗しました: \(detail)", "Read failed: \(detail)") }
-    public static var errorCloudOnlyFolder: String { t("クラウド上にのみあるフォルダです", "This folder is only in the cloud") }
-    public static var errorCloudOnlyRoot: String { t("クラウド上にのみあるフォルダのため、ダウンロードを避けて走査しません", "This folder is only in the cloud, so it is not scanned to avoid downloading it") }
     public static var errorNotAFolder: String { t("フォルダではありません", "It is not a folder") }
 
     // MARK: - ゴミ箱へ移動できない理由
@@ -324,7 +322,7 @@ public enum L10n {
     public static var noMatchingLocations: String { t("該当する場所はありません", "No Locations") }
     public static var problemsTitle: String { t("情報を取得できなかった場所", "Locations with Missing Information") }
     public static var excludedTitle: String { t("除外した場所", "Excluded Locations") }
-    public static var problemsExplanation: String { t("アクセス拒否・読み取りエラーの場所と、ダウンロードを避けるため走査しなかったクラウド上のみの項目です。読み取れなかった部分の容量は集計に含まれず、読み取れなかったフォルダの中にある項目の数も分かりません。", "Locations with access denied or read errors, and cloud-only items that weren’t scanned to avoid downloading them. Space in the parts that couldn’t be read isn’t included, and the number of items inside unreadable folders is unknown.") }
+    public static var problemsExplanation: String { t("アクセス拒否・読み取りエラーの場所と、クラウド上にのみあり一覧を取得できなかったフォルダです。読み取れなかった部分の容量は集計に含まれず、読み取れなかったフォルダの中にある項目の数も分かりません。", "Locations with access denied or read errors, and cloud-only folders whose contents couldn’t be listed. Space in the parts that couldn’t be read isn’t included, and the number of items inside unreadable folders is unknown.") }
     public static var excludedExplanation: String { t("二重に数えないため、または走査範囲の規則により、意図的に走査しなかった場所です（別のボリューム、同じフォルダへの別経路、起動ディスクの別名経路、デバイス領域など）。読み取りに失敗したわけではありません。外付けディスクは、別の対象として選択するとスキャンできます。", "Locations intentionally not scanned to avoid counting them twice or because of scope rules (other volumes, alternate paths to the same folder, alias paths on the startup disk, device areas, and so on). These aren’t read failures. You can scan an external disk by selecting it as a separate target.") }
     public static var permissionGuidance: String { t("アクセスが拒否された場所は、このアプリに「フルディスクアクセス」を許可すると読み取れるようになる場合があります。ただし、システムが保護している場所は許可後も読み取れないことがあり、フォルダのアクセス権など別の原因によることもあります。", "Locations where access was denied may become readable if you give this app Full Disk Access. However, some locations protected by the system may remain unreadable, and the cause may be something else, such as folder permissions.") }
     public static var permissionSteps: String { t("許可する場合: 設定の一覧でこのアプリをオンにします（一覧にない場合は「+」で追加します）。その後アプリを再起動し、再スキャンしてください。", "To allow access, turn on this app in the Full Disk Access list in System Settings. If it isn’t listed, click the Add button (+). Then quit and reopen the app, and scan again.") }
@@ -334,6 +332,7 @@ public enum L10n {
     // MARK: - アプリ: お知らせ
 
     public static var cannotStartScan: String { t("スキャンを開始できません", "Can’t Start the Scan") }
+    public static var networkNotSupported: String { t("ネットワーク上の場所はスキャンの対象外です。Mac に接続したディスク、またはその中のフォルダを選択してください。", "Network locations can’t be scanned. Select a disk connected to this Mac, or a folder on it.") }
     public static func targetNotFound(_ name: String) -> String { t("「\(name)」の場所を確認できませんでした。", "The location of “\(name)” couldn’t be found.") }
     public static var waitForTrash: String { t("ゴミ箱への移動が終わってから、もう一度お試しください。", "Try again after the move to the Trash finishes.") }
     public static var previousScanStopping: String { t("前のスキャンを停止しています。しばらくしてからもう一度お試しください。", "The previous scan is stopping. Try again in a moment.") }

@@ -128,6 +128,21 @@ final class MacIntegrationTests: XCTestCase {
     }
 
     func testRefusesFileInsideHomeLibrary() async throws {
+        let support = home.appendingPathComponent("Library/Application Support/mdu-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let file = support.appendingPathComponent("data.bin")
+        try Data(repeating: 2, count: 10).write(to: file)
+
+        let (coordinator, session) = try await scan(support)
+        let service = ItemActionService(coordinator: coordinator)
+        guard case .failure(.protectedLocation) = service.candidate(for: try id(of: file, in: session), in: session) else {
+            return XCTFail("キャッシュ以外のホームの Library 配下は移動しない")
+        }
+    }
+
+    /// キャッシュ類は保護の例外で、移動の候補にできる（実際の移動はしない）。
+    func testAllowsFileInsideHomeCaches() async throws {
         let caches = home.appendingPathComponent("Library/Caches/mdu-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: caches) }
@@ -136,9 +151,7 @@ final class MacIntegrationTests: XCTestCase {
 
         let (coordinator, session) = try await scan(caches)
         let service = ItemActionService(coordinator: coordinator)
-        guard case .failure(.protectedLocation) = service.candidate(for: try id(of: file, in: session), in: session) else {
-            return XCTFail("ホームの Library 配下は移動しない")
-        }
+        XCTAssertNotNil(try? service.candidate(for: try id(of: file, in: session), in: session).get())
     }
 
     // MARK: - 補助

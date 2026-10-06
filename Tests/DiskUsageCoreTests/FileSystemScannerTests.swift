@@ -201,17 +201,21 @@ final class FileSystemScannerTests: XCTestCase {
         XCTAssertTrue(child(store, "/ro/a")!.isSizeIncomplete)
     }
 
-    func testCloudOnlyDirectoryIsNotListed() {
+    /// クラウド上にのみあるフォルダも中身の一覧を取得して走査する（2026-10-07 決定）。
+    /// 中身のファイルはローカルに領域を持たないため、割り当て済みは 0、論理サイズは分かる。
+    func testCloudOnlyDirectoryIsListed() {
         let fs = MockFileSystem()
         fs.dir("/iCloud", isDataless: true).file("/iCloud/remote", allocated: 0, logical: 9_000_000)
         fs.file("/local", allocated: 10)
         let (store, termination) = scan(fs)
         XCTAssertEqual(termination, .finished)
-        XCTAssertFalse(fs.listedPaths.contains("/iCloud"), "列挙するとダウンロードが始まる")
+        XCTAssertTrue(fs.listedPaths.contains("/iCloud"))
         let cloud = child(store, "/iCloud")!
-        XCTAssertEqual(cloud.accessState, .notScanned)
-        XCTAssertNil(cloud.displayAllocatedBytes)
-        XCTAssertEqual(store.item(store.rootID!)!.sizeSummary.unreadableLocations, 1)
+        XCTAssertEqual(cloud.accessState, .readable)
+        XCTAssertEqual(cloud.traversalState, .complete)
+        XCTAssertEqual(cloud.sizeSummary.knownLogicalBytes, 9_000_000)
+        XCTAssertEqual(cloud.sizeSummary.knownAllocatedBytes, 0)
+        XCTAssertEqual(store.item(store.rootID!)!.sizeSummary.unreadableLocations, 0)
     }
 
     func testDirectoryReplacedDuringScanIsNotEntered() {
@@ -263,6 +267,7 @@ final class FileSystemScannerTests: XCTestCase {
     func testProblemAndExcludedLocationsAreListedSeparately() {
         let fs = MockFileSystem(rootDevice: 1)
         fs.dir("/locked").dir("/mnt", device: 2).dir("/iCloud", isDataless: true)
+        fs.denyListing("/iCloud", error: FileSystemError(kind: .cloudOnly, code: 11, message: "offline"))
         fs.dir("/big").file("/big/1", allocated: 1).file("/big/2", allocated: 1)
         fs.file("/gone", allocated: 1)
         fs.denyListing("/locked")
@@ -292,16 +297,12 @@ final class FileSystemScannerTests: XCTestCase {
         XCTAssertEqual(child(store, "/half")?.accessState, .denied, "途中のアクセス拒否を読み取りエラーと取り違えない")
     }
 
-    func testCloudOnlyRootIsNotListed() {
+    func testCloudOnlyRootIsListed() {
         let fs = MockFileSystem()
         fs.dir("/cloud", isDataless: true).file("/cloud/a", allocated: 0, logical: 100)
         let (store, termination) = scan(fs, root: "/cloud")
-        guard case .rootFailed(let error) = termination else {
-            return XCTFail("クラウド上だけのルートは列挙せず失敗にする")
-        }
-        XCTAssertEqual(error.kind, .cloudOnly)
-        XCTAssertFalse(fs.listedPaths.contains("/cloud"))
-        XCTAssertEqual(store.item(store.rootID!)!.accessState, .notScanned)
+        XCTAssertEqual(termination, .finished)
+        XCTAssertEqual(store.item(store.rootID!)!.sizeSummary.knownLogicalBytes, 100)
     }
 
     func testFileRootKeepsItsSizes() {

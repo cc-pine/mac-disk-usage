@@ -59,28 +59,42 @@ public struct TrashPolicy: Sendable {
         "Backups.backupdb", ".MobileBackups",
     ]
 
+    /// 現在のユーザーのホームからの相対で指定する、保護の例外（2026-10-07 決定）。
+    /// 消してもアプリが作り直すキャッシュ類だけを、`Library` の保護から外す。
+    public static let homeRelativeAllowedRoots = [
+        "Library/Caches",
+        "Library/Developer/Xcode/DerivedData",
+        "Library/Developer/CoreSimulator/Caches",
+    ]
+
     public let protectedRoots: [String]
+    /// 保護対象の中でも移動を許す場所。その配下の通常ファイルは、構造の規則（パッケージ内部など）を満たせば移動できる。
+    public let allowedRoots: [String]
 
     /// - Parameter homeDirectories: ホームディレクトリ。実体パスと元のパスの両方を渡す。
     public init(homeDirectories: [String] = TrashPolicy.currentHomeDirectories()) {
         var roots = Self.systemRoots
+        var allowed: [String] = []
         for home in homeDirectories where PathUtilities.isSafeAbsolute(home) && home != "/" {
             let normalized = PathUtilities.normalize(home)
             roots.append(PathUtilities.join(normalized, "Library"))
             roots.append(PathUtilities.join(normalized, ".Trash"))
+            allowed += Self.homeRelativeAllowedRoots.map { PathUtilities.join(normalized, $0) }
         }
         for relative in Self.volumeRelativeRoots {
             roots.append("/Volumes/*/" + relative)
         }
         protectedRoots = roots
+        allowedRoots = allowed
     }
 
     public init(homeDirectory: String) {
         self.init(homeDirectories: [homeDirectory])
     }
 
-    public init(protectedRoots: [String]) {
+    public init(protectedRoots: [String], allowedRoots: [String] = []) {
         self.protectedRoots = protectedRoots
+        self.allowedRoots = allowedRoots
     }
 
     /// 該当する保護対象のルート。
@@ -90,14 +104,21 @@ public struct TrashPolicy: Sendable {
     public func protectedRoot(containing path: String, volumeRoots: [String] = []) -> String? {
         guard PathUtilities.isSafeAbsolute(path) else { return "/" }
         let components = PathUtilities.components(of: path).map { $0.lowercased() }
-        let mountPatterns = volumeRoots
-            .filter { PathUtilities.isSafeAbsolute($0) && $0 != "/" }
-            .flatMap { root in Self.volumeRelativeRoots.map { PathUtilities.join(PathUtilities.normalize(root), $0) } }
-        return (protectedRoots + mountPatterns).first { root in
+        func matches(_ root: String) -> Bool {
             let pattern = PathUtilities.components(of: root).map { $0.lowercased() }
             guard components.count >= pattern.count else { return false }
             return zip(pattern, components).allSatisfy { $0 == "*" || $0 == $1 }
         }
+        // 例外の場所の配下（例外の場所そのものは含まない）は保護しない
+        if allowedRoots.contains(where: { root in
+            components.count > PathUtilities.components(of: root).count && matches(root)
+        }) {
+            return nil
+        }
+        let mountPatterns = volumeRoots
+            .filter { PathUtilities.isSafeAbsolute($0) && $0 != "/" }
+            .flatMap { root in Self.volumeRelativeRoots.map { PathUtilities.join(PathUtilities.normalize(root), $0) } }
+        return (protectedRoots + mountPatterns).first(where: matches)
     }
 
     /// 利用者のホームディレクトリ。Sandbox の影響を受けないパスワードデータベースの値と、
