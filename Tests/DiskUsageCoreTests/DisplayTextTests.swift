@@ -48,6 +48,12 @@ final class DisplayTextTests: XCTestCase {
         XCTAssertEqual(DisplayText.state(.completed, isStale: true), "完了・結果が古くなっています")
     }
 
+    func testVisibleEscapesControlAndBidiCharacters() {
+        XCTAssertEqual(DisplayText.visible("a\nb"), "a<U+000A>b")
+        XCTAssertEqual(DisplayText.visible("photo\u{202E}gpj.exe"), "photo<U+202E>gpj.exe")
+        XCTAssertEqual(DisplayText.visible("書類 2026:10.txt"), "書類 2026:10.txt")
+    }
+
     func testElapsed() {
         XCTAssertEqual(DisplayText.elapsed(59.9), "59秒")
         XCTAssertEqual(DisplayText.elapsed(125), "2分5秒")

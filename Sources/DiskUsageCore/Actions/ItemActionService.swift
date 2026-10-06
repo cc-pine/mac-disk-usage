@@ -15,6 +15,8 @@ public struct TrashTarget: Sendable {
 public protocol Trasher: Sendable {
     /// 再確認の前に呼び、パスを現在の実体への参照に変える。
     func target(forPath path: String) -> TrashTarget
+    /// 参照が現在指している項目のパス。解決できなければ nil。
+    func currentPath(of target: TrashTarget) -> String?
     /// - Returns: ゴミ箱内の移動先パス（取得できれば）
     func moveToTrash(_ target: TrashTarget) throws -> String?
 }
@@ -22,6 +24,10 @@ public protocol Trasher: Sendable {
 extension Trasher {
     public func target(forPath path: String) -> TrashTarget {
         TrashTarget(path: path, url: URL(fileURLWithPath: path))
+    }
+
+    public func currentPath(of target: TrashTarget) -> String? {
+        target.path
     }
 }
 
@@ -41,6 +47,18 @@ public struct FoundationTrasher: Trasher {
         }
         #endif
         return TrashTarget(path: path, url: pathURL)
+    }
+
+    public func currentPath(of target: TrashTarget) -> String? {
+        #if os(macOS)
+        // ファイル参照 URL なら、いま指している項目のパスへ解決する
+        if let resolved = (target.url as NSURL).filePathURL {
+            return PathUtilities.normalize(resolved.path)
+        }
+        return nil
+        #else
+        return target.path
+        #endif
     }
 
     public func moveToTrash(_ target: TrashTarget) throws -> String? {
@@ -70,7 +88,9 @@ public enum TrashFailure: Error, Equatable, Sendable {
     case changedSinceScan(String)
     /// ファイルシステムが移動を拒否した
     case systemRefused(String)
-    /// 移動はできたが、ゴミ箱に入った項目が確認した項目と一致しない
+    /// 移動の前に、対象や経路を読み取れず確認できなかった
+    case cannotVerify(String)
+    /// 移動はできたが、ゴミ箱に入った項目が確認した項目と一致しない、または元の場所に残っている
     case unexpectedItemMoved(String?)
     case unsupported
 
@@ -79,7 +99,8 @@ public enum TrashFailure: Error, Equatable, Sendable {
         case .blocked(let reason): return reason.message
         case .changedSinceScan(let detail): return "スキャン後に項目が変わったため中止しました（\(detail)）。再スキャンしてから選び直してください。"
         case .systemRefused(let detail): return "ゴミ箱へ移動できませんでした: \(detail)"
-        case .unexpectedItemMoved(let path): return "ゴミ箱へ移動した項目が、確認した項目と一致しません。ゴミ箱（\(path ?? "場所不明")）を確認し、必要なら元に戻してください。"
+        case .cannotVerify(let detail): return "移動前の確認ができないため中止しました（\(detail)）。"
+        case .unexpectedItemMoved(let path): return "確認した項目がゴミ箱へ移ったことを確かめられませんでした。元の場所に残っているか、別の項目が移動された可能性があります。ゴミ箱（\(path ?? "場所不明")）と元の場所を確認し、必要なら元に戻してください。"
         case .unsupported: return "この環境ではゴミ箱へ移動できません。"
         }
     }
@@ -218,7 +239,11 @@ public final class ItemActionService: @unchecked Sendable {
         // 参照は再確認の前に作り、確認した実体を指したまま移動に使う
         let target = trasher.target(forPath: candidate.path)
         if let problem = verifyOnDisk(candidate, in: session) {
-            return .failure(.changedSinceScan(problem))
+            return .failure(problem)
+        }
+        // 参照が、確認した場所の項目を指したままかを確かめる（参照を作った後で差し替わっていないか）
+        guard trasher.currentPath(of: target) == candidate.path else {
+            return .failure(.changedSinceScan("移動の参照先が確認した項目と一致しません"))
         }
 
         let trashedPath: String?
@@ -230,62 +255,106 @@ public final class ItemActionService: @unchecked Sendable {
             return .failure(.systemRefused(error.localizedDescription))
         }
 
-        lock.lock()
-        moved[session.scanID, default: []].insert(candidate.itemID)
-        lock.unlock()
+        // 元の場所を確かめる。確認した実体がまだ残っていれば、別の項目が移動された可能性がある
+        let originVacated: Bool
+        switch provider.metadata(atPath: candidate.path) {
+        case .success(let metadata) where metadata.identity == candidate.identity:
+            originVacated = false
+        default:
+            originVacated = true
+        }
+        if originVacated {
+            lock.lock()
+            moved[session.scanID, default: []].insert(candidate.itemID)
+            lock.unlock()
+        }
+        // 何かがゴミ箱へ移った可能性があるため、どちらの場合も結果は古いものとして扱う
         session.markStale()
+        guard originVacated else {
+            return .failure(.unexpectedItemMoved(trashedPath))
+        }
 
         // ゴミ箱に入った項目が確認した項目と同じかを確かめる（取り違えを利用者に知らせる）。
-        // 移動先を読めない（~/.Trash へのアクセスが制限されているなど）場合は、確認できなかったことを返す。
+        // 移動先を読めない（~/.Trash へのアクセスが制限されているなど）場合は「未確認」として返す。
+        // 移動で inode が変わるファイルシステム（FAT など）では、名前・サイズ・更新日時が一致すれば未確認とする。
         var isVerified = false
         if let trashedPath, case .success(let metadata) = provider.metadata(atPath: trashedPath) {
-            guard metadata.identity == candidate.identity else {
+            if metadata.identity == candidate.identity {
+                isVerified = true
+            } else if let item = session.store.item(candidate.itemID),
+                      metadata.kind == .file,
+                      metadata.logicalSize == item.logicalSize,
+                      metadata.modifiedDate == item.modifiedDate {
+                isVerified = false
+            } else {
                 return .failure(.unexpectedItemMoved(trashedPath))
             }
-            isVerified = true
         }
         return .success(TrashOutcome(candidate: candidate, trashedPath: trashedPath, isVerified: isVerified))
     }
 
-    /// 対象と、ルートから親までの各ディレクトリが、スキャン時と同じ実体のままかを lstat で確かめる。
-    private func verifyOnDisk(_ candidate: TrashCandidate, in session: ScanSession) -> String? {
+    /// 移動の直前に、対象と経路がスキャン時と同じ実体のままかを lstat で確かめる。
+    ///
+    /// - スキャンルートより上の各フォルダがリンクに置き換わっていない（ツリーごと移されていない）
+    /// - ルートから親までの各フォルダの識別情報が変わっていない
+    /// - 対象が同じ実体の通常ファイルで、ハードリンクがなく、内容が更新されていない
+    private func verifyOnDisk(_ candidate: TrashCandidate, in session: ScanSession) -> TrashFailure? {
         let store = session.store
+        func unreadable(_ what: String, _ error: FileSystemError) -> TrashFailure {
+            error.kind == .notFound
+                ? .changedSinceScan("\(what)が見つかりません")
+                : .cannotVerify("\(what)を確認できません: \(error.message)")
+        }
+
+        var cursor = PathUtilities.parent(of: session.scope.rootPath)
+        while let path = cursor, path != "/" {
+            switch provider.metadata(atPath: path) {
+            case .failure(let error):
+                return unreadable("スキャン対象より上のフォルダ", error)
+            case .success(let metadata) where metadata.kind != .directory:
+                return .changedSinceScan("スキャン対象より上のフォルダがフォルダではなくなりました: \(path)")
+            case .success:
+                break
+            }
+            cursor = PathUtilities.parent(of: path)
+        }
+
         for ancestorID in store.ancestry(of: candidate.itemID).dropLast() {
             guard let ancestor = store.item(ancestorID),
                   let path = store.path(of: ancestorID),
                   let expected = ancestor.fileIdentity else {
-                return "親フォルダを識別できません"
+                return .cannotVerify("親フォルダを識別できません")
             }
             switch provider.metadata(atPath: path) {
             case .failure(let error):
-                return "親フォルダを確認できません: \(error.message)"
+                return unreadable("親フォルダ", error)
             case .success(let metadata):
                 guard metadata.kind == .directory else {
-                    return "親フォルダがフォルダではなくなりました: \(path)"
+                    return .changedSinceScan("親フォルダがフォルダではなくなりました: \(path)")
                 }
                 guard metadata.identity == expected else {
-                    return "親フォルダが置き換わりました: \(path)"
+                    return .changedSinceScan("親フォルダが置き換わりました: \(path)")
                 }
             }
         }
         guard let item = store.item(candidate.itemID) else {
-            return "結果から項目が見つかりません"
+            return .cannotVerify("結果から項目が見つかりません")
         }
         switch provider.metadata(atPath: candidate.path) {
         case .failure(let error):
-            return "項目を確認できません: \(error.message)"
+            return unreadable("項目", error)
         case .success(let metadata):
             guard metadata.kind == .file else {
-                return "通常ファイルではなくなりました"
+                return .changedSinceScan("通常ファイルではなくなりました")
             }
             guard metadata.identity == candidate.identity else {
-                return "別の項目に置き換わりました"
+                return .changedSinceScan("別の項目に置き換わりました")
             }
             guard (metadata.linkCount ?? 1) <= 1 else {
-                return "ハードリンクが作られました"
+                return .changedSinceScan("ハードリンクが作られました")
             }
             guard metadata.logicalSize == item.logicalSize, metadata.modifiedDate == item.modifiedDate else {
-                return "内容が更新されました"
+                return .changedSinceScan("内容が更新されました")
             }
         }
         return nil
@@ -293,15 +362,27 @@ public final class ItemActionService: @unchecked Sendable {
 
     /// 項目より上にあるボリュームのマウント先（親とデバイスが異なるフォルダ）。
     /// `/Volumes` 以外にマウントされたボリュームにもボリューム単位の保護規則を当てるために使う。
+    /// スキャンルートより上（ルートを含む）は lstat で、ルートより下はスキャン結果の識別情報で調べる。
     private func volumeRoots(above id: ItemID, in session: ScanSession) -> [String] {
         let store = session.store
         var roots: [String] = []
         var parentDevice: UInt64?
-        if let parentPath = PathUtilities.parent(of: session.scope.rootPath),
-           case .success(let metadata) = provider.metadata(atPath: parentPath) {
-            parentDevice = metadata.identity?.device
+        let rootComponents = PathUtilities.components(of: session.scope.rootPath)
+        for depth in 0..<rootComponents.count {
+            let path = "/" + rootComponents.prefix(depth + 1).joined(separator: "/")
+            guard case .success(let metadata) = provider.metadata(atPath: path), let device = metadata.identity?.device else {
+                parentDevice = nil
+                continue
+            }
+            if depth == 0, case .success(let root) = provider.metadata(atPath: "/") {
+                parentDevice = root.identity?.device
+            }
+            if let parentDevice, parentDevice != device {
+                roots.append(path)
+            }
+            parentDevice = device
         }
-        for ancestorID in store.ancestry(of: id).dropLast() {
+        for ancestorID in store.ancestry(of: id).dropLast().dropFirst() {
             guard let device = store.item(ancestorID)?.fileIdentity?.device else { continue }
             if let parentDevice, parentDevice != device, let path = store.path(of: ancestorID) {
                 roots.append(path)

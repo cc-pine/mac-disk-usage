@@ -96,6 +96,24 @@ public enum DisplayText {
         return isStale ? "\(base)・結果が古くなっています" : base
     }
 
+    /// 名前やパスを確認ダイアログなどに出すとき、改行などの制御文字や文字の向きを変える
+    /// 書式文字を目に見える形にする。名前で表示内容を偽装されないようにするため。
+    public static func visible(_ text: String) -> String {
+        var result = ""
+        for scalar in text.unicodeScalars {
+            let value = scalar.value
+            let isControl = value < 0x20 || value == 0x7F || (0x80...0x9F).contains(value)
+            let isBidiControl = value == 0x200E || value == 0x200F || (0x202A...0x202E).contains(value)
+                || (0x2066...0x2069).contains(value) || value == 0x061C
+            if isControl || isBidiControl {
+                result += String(format: "<U+%04X>", value)
+            } else {
+                result.unicodeScalars.append(scalar)
+            }
+        }
+        return result
+    }
+
     public static func elapsed(_ interval: TimeInterval) -> String {
         let seconds = max(0, Int(interval.rounded(.down)))
         if seconds < 60 {

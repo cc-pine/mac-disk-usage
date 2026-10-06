@@ -59,10 +59,10 @@ final class MockFileSystem: FileSystemProvider, @unchecked Sendable {
         entries[path]?.listError = FileSystemError(kind: .permissionDenied, code: 13, message: "Permission denied")
     }
 
-    func failMetadata(_ path: String) {
+    func failMetadata(_ path: String, error: FileSystemError = FileSystemError(kind: .notFound, code: 2, message: "No such file or directory")) {
         lock.lock()
         defer { lock.unlock() }
-        entries[path]?.metadataError = FileSystemError(kind: .notFound, code: 2, message: "No such file or directory")
+        entries[path]?.metadataError = error
     }
 
     func interruptListing(_ path: String, after count: Int, error: FileSystemError? = nil) {

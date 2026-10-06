@@ -475,6 +475,11 @@ final class ScanViewModel {
             )
         case .success:
             break
+        case .failure(.unexpectedItemMoved):
+            // 何かが移動した可能性があるため「移動できなかった」とは書かない
+            if case .failure(let failure) = outcome {
+                message = UserMessage(title: "ゴミ箱の中身を確認してください", detail: failure.message)
+            }
         case .failure(let failure):
             message = UserMessage(title: "ゴミ箱へ移動できませんでした", detail: failure.message)
         }
