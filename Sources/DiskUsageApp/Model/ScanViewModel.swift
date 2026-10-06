@@ -233,6 +233,9 @@ final class ScanViewModel {
         defer { isPreparingScan = false }
 
         if let current = session, !current.currentState.isTerminal {
+            if current.currentState == .scanning {
+                cancelRequestedAt = Date()
+            }
             current.cancel()
             progress = current.progress
             _ = await current.waitUntilFinished()
@@ -257,10 +260,24 @@ final class ScanViewModel {
         }
     }
 
+    /// キャンセルを要求した時刻。停止待ちが長引いたら強制中止を出すために使う
+    private(set) var cancelRequestedAt: Date?
+
     func cancelScan() {
         guard let session else { return }
+        if session.currentState == .scanning {
+            cancelRequestedAt = Date()
+        }
         session.cancel()
         progress = session.progress
+    }
+
+    /// 停止待ち（OS 呼び出しが戻らない）の間だけ、利用者の明示操作で中止を確定する。
+    func forceStopScan() {
+        guard let session, session.currentState == .cancelling else { return }
+        session.forceStop()
+        progress = session.progress
+        result = session.result
     }
 
     func rescan() async {

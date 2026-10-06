@@ -245,5 +245,5 @@ ScanFinished(scanID, revision, state, summary)
 
 ### 未解決
 
-- 応答しない OS 呼び出しでキャンセルの確定を待ち続ける場合の扱い（[DECISIONS.md](DECISIONS.md) の「キャンセルと停止の確定」）。
+- 停止待ちが続く場合は、利用者の操作による強制中止で次のスキャンへ進める（[DECISIONS.md](DECISIONS.md) の「キャンセルと停止の確定」）。戻らない OS 呼び出しを待つスレッドはアプリ内に残る。
 - 画面操作での確認（[TASKS.md](TASKS.md)）。

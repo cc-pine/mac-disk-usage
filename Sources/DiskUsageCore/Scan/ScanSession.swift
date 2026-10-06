@@ -13,6 +13,8 @@ public struct ScanResult: Equatable, Sendable {
     public let isStale: Bool
     /// ルートを列挙できなかった場合などの短い説明
     public let failureDescription: String?
+    /// 停止の確認を待たずに、利用者の操作で中止を確定した
+    public let wasForceStopped: Bool
 }
 
 /// 1回のスキャン。ライフサイクルと終端状態の確定を一元化する。
@@ -31,6 +33,7 @@ public final class ScanSession: @unchecked Sendable {
     private let lock = NSRecursiveLock()
     private var state: ScanState = .scanning
     private var cancelRequested = false
+    private var wasForceStopped = false
     private var isStale = false
     private var failureDescription: String?
     private let startedAt = Date()
@@ -106,6 +109,22 @@ public final class ScanSession: @unchecked Sendable {
         state = .cancelling
         lock.unlock()
         publish(force: true)
+    }
+
+    /// 停止を待っている（`cancelling` の）間だけ、利用者の明示操作で中止を確定する。
+    ///
+    /// 応答しないネットワークマウントなどで OS 呼び出しが戻らない場合の逃げ道。取得済みの結果で
+    /// `cancelled` を確定し、次のスキャンを始められるようにする。止まっていない走査スレッドが
+    /// 後から届ける結果は、確定済みのストアに保存されない（REQUIREMENTS §6）。
+    public func forceStop() {
+        lock.lock()
+        guard state == .cancelling else {
+            lock.unlock()
+            return
+        }
+        wasForceStopped = true
+        lock.unlock()
+        finish(termination: .cancelled)
     }
 
     /// ゴミ箱移動などの後で、結果が古いことを記録する。走査完了という事実は変えない。
@@ -241,7 +260,8 @@ public final class ScanSession: @unchecked Sendable {
             revision: stats.revision,
             counts: stats.counts,
             isStale: isStale,
-            failureDescription: failureDescription
+            failureDescription: failureDescription,
+            wasForceStopped: wasForceStopped
         )
     }
 }

@@ -124,6 +124,47 @@ final class ScanCoordinatorTests: XCTestCase {
         XCTAssertEqual(late.map(\.state), [.completed])
     }
 
+    /// OS 呼び出しが戻らない間は停止を確定しない。利用者が強制中止したときだけ確定し、次のスキャンを許す。
+    func testForceStopOnlyWhileCancellingAndDropsLateResults() async throws {
+        let fs = makeTree()
+        let gate = Gate()
+        let entered = DispatchSemaphore(value: 0)
+        fs.onList = { @Sendable path in
+            if path == "/data/d0" {
+                entered.signal()
+                gate.wait()
+            }
+        }
+        let coordinator = ScanCoordinator(provider: fs, configuration: configuration())
+        let scope = ScanScope(rootPath: "/data", kind: .folder)!
+        let stuck = try coordinator.start(scope: scope)
+        blockingWait(entered)
+
+        stuck.forceStop()
+        XCTAssertEqual(stuck.currentState, .scanning, "キャンセル前の強制中止は効かない")
+        stuck.cancel()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(stuck.currentState, .cancelling, "OS 呼び出しが戻るまでは自動で確定しない")
+
+        stuck.forceStop()
+        let result = await stuck.waitUntilFinished()
+        XCTAssertEqual(result.state, .cancelled)
+        XCTAssertTrue(result.wasForceStopped)
+        let itemsAtStop = stuck.store.itemCount
+
+        fs.onList = nil
+        let next = try coordinator.start(scope: scope)
+        gate.open()
+        let nextResult = await next.waitUntilFinished()
+        XCTAssertEqual(nextResult.state, .completed)
+        XCTAssertFalse(nextResult.wasForceStopped)
+
+        // 止まっていなかった旧スキャンのスレッドが戻っても、確定済みの結果は変わらない
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(stuck.store.itemCount, itemsAtStop)
+        XCTAssertEqual(stuck.currentState, .cancelled)
+    }
+
     func testCancelAfterFinishDoesNotChangeTerminalState() async throws {
         let coordinator = ScanCoordinator(provider: makeTree(), configuration: configuration())
         let session = try coordinator.start(scope: ScanScope(rootPath: "/data", kind: .folder)!)

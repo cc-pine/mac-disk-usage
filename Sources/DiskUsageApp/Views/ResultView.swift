@@ -85,6 +85,8 @@ private struct ResultHeader: View {
                 if model.result?.counts.problemItems ?? 0 > 0 {
                     PermissionGuidance()
                 }
+            } else if model.result?.wasForceStopped == true {
+                Banner(text: "停止の確認を待たずに中止しました。表示中の結果は中止した時点までのものです。応答しない場所（ネットワーク上のフォルダなど）を走査していた可能性があります。", color: .orange)
             } else if let problems = model.progress?.counts.problemItems, problems > 0 {
                 Banner(text: "情報を取得できなかった場所があります（アクセス拒否・読み取りエラー・クラウド上のみの項目など）。画面下の「未取得」から確認できます。", color: .orange)
             }
@@ -262,10 +264,15 @@ private struct StatusFooter: View {
         if model.isScanActive {
             ProgressView()
                 .controlSize(.small)
-            Button("中止") {
-                model.cancelScan()
+            if model.state == .cancelling {
+                ForceStopButton(requestedAt: model.cancelRequestedAt) {
+                    model.forceStopScan()
+                }
+            } else {
+                Button("中止") {
+                    model.cancelScan()
+                }
             }
-            .disabled(model.state == .cancelling)
         } else if model.session != nil {
             Button("再スキャン") {
                 Task { await model.rescan() }
@@ -287,6 +294,28 @@ private struct ElapsedText: View {
             }
         } else {
             Text("所要 \(DisplayText.elapsed(progress.elapsed))")
+        }
+    }
+}
+
+/// 停止待ちが続いたときだけ出す強制中止ボタン。自動では切り離さず、利用者が選んだときだけ中止を確定する。
+private struct ForceStopButton: View {
+    /// 停止待ちがこの秒数続いたらボタンを出す
+    static let delay: TimeInterval = 3
+
+    let requestedAt: Date?
+    let action: () -> Void
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let waited = requestedAt.map { context.date.timeIntervalSince($0) } ?? 0
+            if waited >= Self.delay {
+                Button("強制中止", action: action)
+                    .help("停止の確認を待たずに、ここまでの結果で中止します。応答しない場所（ネットワーク上のフォルダなど）で止まっている場合に使います。")
+            } else {
+                Text("中止しています…")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }
