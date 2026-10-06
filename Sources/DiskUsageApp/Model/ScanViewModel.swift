@@ -471,7 +471,7 @@ final class ScanViewModel {
         case .success(let moved) where !moved.isVerified:
             message = UserMessage(
                 title: "ゴミ箱へ移動しました",
-                detail: "移動先を読み取れなかったため、ゴミ箱に入った項目が「\(candidate.name)」であることを確かめられませんでした。ゴミ箱で確認してください。"
+                detail: "ゴミ箱に入った項目が「\(DisplayText.visible(candidate.name))」と同じであることを確認できませんでした（移動先を読み取れない、またはファイルシステムが識別情報を引き継がないため）。ゴミ箱で確認してください。"
             )
         case .success:
             break

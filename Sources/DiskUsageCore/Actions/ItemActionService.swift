@@ -276,7 +276,8 @@ public final class ItemActionService: @unchecked Sendable {
 
         // ゴミ箱に入った項目が確認した項目と同じかを確かめる（取り違えを利用者に知らせる）。
         // 移動先を読めない（~/.Trash へのアクセスが制限されているなど）場合は「未確認」として返す。
-        // 移動で inode が変わるファイルシステム（FAT など）では、名前・サイズ・更新日時が一致すれば未確認とする。
+        // 移動で inode が変わるファイルシステム（FAT など）では、サイズと更新日時が一致すれば未確認とする
+        // （名前はゴミ箱内で重複を避けるため変わることがあるので比べない）。
         var isVerified = false
         if let trashedPath, case .success(let metadata) = provider.metadata(atPath: trashedPath) {
             if metadata.identity == candidate.identity {
@@ -363,6 +364,10 @@ public final class ItemActionService: @unchecked Sendable {
     /// 項目より上にあるボリュームのマウント先（親とデバイスが異なるフォルダ）。
     /// `/Volumes` 以外にマウントされたボリュームにもボリューム単位の保護規則を当てるために使う。
     /// スキャンルートより上（ルートを含む）は lstat で、ルートより下はスキャン結果の識別情報で調べる。
+    ///
+    /// 起動ディスクでは firmlink 先（`/Users`、`/Volumes` など Data 側）もデバイスが変わるため
+    /// マウント先として扱い、その直下の `System`・`Library` などの名前のフォルダも保護対象になる。
+    /// 禁止が広がる方向の誤りなので許容する。
     private func volumeRoots(above id: ItemID, in session: ScanSession) -> [String] {
         let store = session.store
         var roots: [String] = []

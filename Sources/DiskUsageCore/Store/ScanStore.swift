@@ -458,19 +458,11 @@ public final class ScanStore: @unchecked Sendable {
             defer { lock.unlock() }
             return page(of: cache.ids, offset: offset, limit: limit, isProvisional: true)
         }
-        let sortRevision = revision
-        let snapshot = nodes
-        let candidates = topFiles.elements
-        lock.unlock()
-
-        // 暫定の上位（最大 provisionalFileLimit 件）も、同名・同サイズの比較でパスを作るためロックの外で並べる
-        let sorted = Self.sortBySize(candidates, nodes: snapshot, rootPath: rootPath, pathTieBreak: true)
-
-        lock.lock()
+        // 暫定の上位は最大 provisionalFileLimit 件なので、ロックの中で並べる。
+        // ノード配列の参照をロックの外へ持ち出すと、次の保存で配列全体の複製が起きるため避ける。
         defer { lock.unlock() }
-        if revision == sortRevision {
-            provisionalCache = (sortRevision, sorted)
-        }
+        let sorted = sortBySize(topFiles.elements, pathTieBreak: true)
+        provisionalCache = (revision, sorted)
         return page(of: sorted, offset: offset, limit: limit, isProvisional: true)
     }
 
@@ -503,6 +495,8 @@ public final class ScanStore: @unchecked Sendable {
     /// その間も UI の問い合わせを待たせない。
     private func buildFileIndex() {
         lock.lock()
+        // 確定後は apply が保存しないため、配列の参照を持ち出しても複製は起きない
+        assert(isFinalized, "全件索引は確定後にだけ作る")
         let snapshot = nodes
         let ids = fileIDs
         lock.unlock()
