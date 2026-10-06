@@ -23,7 +23,7 @@ final class DisplayTextTests: XCTestCase {
         XCTAssertEqual(DisplayText.size(of: item(kind: .file, allocated: 0)), "0 bytes")
         XCTAssertEqual(DisplayText.size(of: item(kind: .symbolicLink)), "—")
         XCTAssertEqual(DisplayText.size(of: item(kind: .directory, access: .denied, traversal: .partial)), "不明")
-        XCTAssertEqual(DisplayText.size(of: item(kind: .directory, traversal: .excluded, exclusion: .otherVolume)), "対象外")
+        XCTAssertEqual(DisplayText.size(of: item(kind: .directory, traversal: .excluded, exclusion: .otherVolume)), "除外")
     }
 
     func testPartialDirectoryIsMarked() {
@@ -37,7 +37,7 @@ final class DisplayTextTests: XCTestCase {
 
     func testExcludedIsNotDescribedAsReadable() {
         let excluded = item(kind: .directory, traversal: .excluded, exclusion: .duplicatePath)
-        XCTAssertEqual(DisplayText.access(of: excluded), "未読込・同じフォルダへの別経路のため対象外")
+        XCTAssertEqual(DisplayText.access(of: excluded), "除外（別経路）")
         XCTAssertEqual(DisplayText.access(of: item(kind: .directory, access: .denied, traversal: .partial)), "アクセス拒否・一部のみ走査")
     }
 
@@ -46,6 +46,12 @@ final class DisplayTextTests: XCTestCase {
         XCTAssertEqual(DisplayText.state(.cancelled, isStale: false), "中止（部分結果）")
         XCTAssertEqual(DisplayText.state(.completedWithErrors, isStale: false), "完了（一部未取得）")
         XCTAssertEqual(DisplayText.state(.completed, isStale: true), "完了・結果が古くなっています")
+    }
+
+    func testVisibleEscapesControlAndBidiCharacters() {
+        XCTAssertEqual(DisplayText.visible("a\nb"), "a<U+000A>b")
+        XCTAssertEqual(DisplayText.visible("photo\u{202E}gpj.exe"), "photo<U+202E>gpj.exe")
+        XCTAssertEqual(DisplayText.visible("書類 2026:10.txt"), "書類 2026:10.txt")
     }
 
     func testElapsed() {

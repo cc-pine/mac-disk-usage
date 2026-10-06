@@ -147,6 +147,56 @@ final class BenchmarkTests: XCTestCase {
         """)
     }
 
+    /// 1つのフォルダに 200,000 件のファイルがある場合の、直下一覧の並べ替えと保存処理への影響を測る。
+    func testHugeFlatDirectory() async throws {
+        guard ProcessInfo.processInfo.environment["MDU_BENCHMARK"] == "1" else {
+            throw XCTSkip("MDU_BENCHMARK=1 のときだけ実行する")
+        }
+        let fs = SyntheticFileSystem(depth: 0, fanout: 0, filesPerLeaf: 200_000)
+        let coordinator = ScanCoordinator(provider: fs)
+        let clock = ContinuousClock()
+        let session = try coordinator.start(scope: ScanScope(rootPath: "/bench", kind: .folder)!)
+
+        // 走査中に直下一覧を繰り返し問い合わせ、ほかの問い合わせ（件数の取得）が待たされないかを見る
+        let statsLatency = LatencyRecorder()
+        let done = DispatchSemaphore(value: 0)
+        let reader = Thread {
+            defer { done.signal() }
+            let store = session.store
+            while !session.currentState.isTerminal {
+                if let root = store.rootID {
+                    _ = store.children(of: root, offset: 0, limit: 200)
+                }
+            }
+        }
+        let statsReader = Thread {
+            let store = session.store
+            while !session.currentState.isTerminal {
+                let begin = ContinuousClock.now
+                _ = store.item(ItemID(0))
+                statsLatency.record(ContinuousClock.now - begin)
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+        reader.start()
+        statsReader.start()
+        let result = await session.waitUntilFinished()
+        blockingWait(done)
+        XCTAssertEqual(result.counts.files, 200_000)
+
+        let begin = clock.now
+        let page = session.store.children(of: session.store.rootID!, offset: 100_000, limit: 200)
+        let firstSort = clock.now - begin
+        let cachedBegin = clock.now
+        _ = session.store.children(of: session.store.rootID!, offset: 0, limit: 200)
+        let cached = clock.now - cachedBegin
+        XCTAssertEqual(page.items.count, 200)
+        print("""
+        [benchmark] flatFiles=\(result.counts.files) childrenSortAfterFinish=\(firstSort) cachedChildrenQuery=\(cached)
+        [benchmark] maxItemQueryLatencyWhileSorting=\(statsLatency.maximum) samples=\(statsLatency.count)
+        """)
+    }
+
     final class LatencyRecorder: @unchecked Sendable {
         private let lock = NSLock()
         private var storedMaximum: Duration = .zero

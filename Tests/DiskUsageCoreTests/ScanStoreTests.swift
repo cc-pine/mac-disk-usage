@@ -287,6 +287,22 @@ final class ScanStoreTests: XCTestCase {
         XCTAssertEqual(store.item(root)!.sizeSummary.knownAllocatedBytes, Int64((0..<2_000).reduce(0, +)))
     }
 
+    func testPositionOfChildFollowsSizeOrder() {
+        var b = RecordBuilder()
+        let root = b.add("root", .directory, parent: nil)
+        let small = b.add("small", .file, parent: root, allocated: 1)
+        let big = b.add("big", .file, parent: root, allocated: 100)
+        let other = b.add("other", .directory, parent: root)
+        b.listed(root)
+        b.listed(other)
+        let store = ScanStore(rootPath: "/root")
+        store.apply(b.take())
+        XCTAssertEqual(store.position(of: big, in: root), 0)
+        XCTAssertEqual(store.position(of: small, in: root), 1)
+        XCTAssertEqual(store.position(of: other, in: root), 2, "0 bytes のフォルダは既知サイズの後ろ")
+        XCTAssertNil(store.position(of: root, in: root))
+    }
+
     func testRevisionAdvancesPerBatch() {
         var b = RecordBuilder()
         let root = b.add("root", .directory, parent: nil)

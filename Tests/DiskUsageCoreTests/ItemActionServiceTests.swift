@@ -1,19 +1,56 @@
 import XCTest
 @testable import DiskUsageCore
 
+/// 模擬ファイルシステム上で、項目を ~/.Trash へ移す模擬のゴミ箱。
 final class RecordingTrasher: Trasher, @unchecked Sendable {
     private let lock = NSLock()
+    private let fileSystem: MockFileSystem
     private(set) var paths: [String] = []
     var error: Error?
+    /// false にすると、移動先を読めない（~/.Trash にアクセスできない）状況を再現する
+    var placeInTrash = true
+    /// 設定すると、移動先として別の実体を置く（取り違えや inode の変化の再現用）
+    var substitute: FileMetadata?
+    /// true にすると、元の項目を残したまま成功を返す（別の項目が移動された状況の再現用）
+    var leaveOriginal = false
+    /// 設定すると、参照が別の場所を指していることにする（参照作成後の差し替えの再現用）
+    var resolvedPathOverride: String?
+    /// 設定すると、移動の途中でゲートが開くまで待つ（同時操作の再現用）
+    var gate: Gate?
+    /// 移動処理に入ったことを知らせる
+    let entered = DispatchSemaphore(value: 0)
 
-    func moveToTrash(atPath path: String) throws -> String? {
+    init(fileSystem: MockFileSystem) {
+        self.fileSystem = fileSystem
+    }
+
+    func currentPath(of target: TrashTarget) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return resolvedPathOverride ?? target.path
+    }
+
+    func moveToTrash(_ target: TrashTarget) throws -> String? {
+        entered.signal()
+        lock.lock()
+        let gate = self.gate
+        lock.unlock()
+        gate?.wait()
         lock.lock()
         defer { lock.unlock() }
         if let error {
             throw error
         }
+        let path = target.path
         paths.append(path)
-        return "/Users/me/.Trash/" + PathUtilities.lastComponent(of: path)
+        let trashed = "/Users/me/.Trash/" + PathUtilities.lastComponent(of: path)
+        if !leaveOriginal, case .success(let metadata) = fileSystem.metadata(atPath: path) {
+            fileSystem.remove(path)
+            if placeInTrash {
+                fileSystem.place(trashed, substitute ?? metadata)
+            }
+        }
+        return trashed
     }
 }
 
@@ -35,7 +72,7 @@ final class ItemActionServiceTests: XCTestCase {
         fs.dir("/Library").file("/Library/x", allocated: 1)
         fs.dir("/Volumes").dir("/Volumes/Ext", device: 3).dir("/Volumes/Ext/.Trashes", device: 3)
         fs.file("/Volumes/Ext/.Trashes/t", allocated: 1, device: 3).file("/Volumes/Ext/movie.mov", allocated: 9, device: 3)
-        trasher = RecordingTrasher()
+        trasher = RecordingTrasher(fileSystem: fs)
         coordinator = ScanCoordinator(provider: fs)
     }
 
@@ -118,6 +155,121 @@ final class ItemActionServiceTests: XCTestCase {
         let policy = TrashPolicy(homeDirectories: ["/Users/me", "/Volumes/Home/me"])
         XCTAssertNotNil(policy.protectedRoot(containing: "/Volumes/Home/me/Library/a"), "ホームの実体パスも保護する")
         XCTAssertNotNil(policy.protectedRoot(containing: "/System/Volumes/Data/Users/me/x"))
+    }
+
+    func testVerifiesTrashedItemIdentity() async throws {
+        let session = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/big.mov"), in: session).get()
+        let outcome = try service.moveToTrash(candidate, in: session).get()
+        XCTAssertTrue(outcome.isVerified)
+    }
+
+    func testUnverifiableTrashIsReportedAsUnverified() async throws {
+        // 移動先を読めない（模擬ファイルシステムに移動先がない）
+        trasher.placeInTrash = false
+        let session = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/big.mov"), in: session).get()
+        let outcome = try service.moveToTrash(candidate, in: session).get()
+        XCTAssertFalse(outcome.isVerified)
+        XCTAssertTrue(service.isMoved(candidate.itemID, in: session))
+    }
+
+    func testDetectsWrongItemInTrash() async throws {
+        trasher.substitute = FileMetadata(kind: .file, logicalSize: 1, allocatedSize: 1, identity: FileIdentity(device: 1, inode: 777_777))
+        let session = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/big.mov"), in: session).get()
+        guard case .failure(.unexpectedItemMoved) = service.moveToTrash(candidate, in: session) else {
+            return XCTFail("ゴミ箱の項目が確認した実体と違えば知らせる")
+        }
+        XCTAssertTrue(service.isMoved(candidate.itemID, in: session), "移動自体は起きたものとして扱う")
+        XCTAssertTrue(session.result.isStale)
+    }
+
+    func testOriginalStillPresentIsReportedAndNotMarkedMoved() async throws {
+        trasher.leaveOriginal = true
+        let session = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/big.mov"), in: session).get()
+        guard case .failure(.unexpectedItemMoved) = service.moveToTrash(candidate, in: session) else {
+            return XCTFail("確認した項目が元の場所に残っていれば知らせる")
+        }
+        XCTAssertFalse(service.isMoved(candidate.itemID, in: session), "残っている項目を移動済みにしない")
+        XCTAssertTrue(session.result.isStale, "何かが移動した可能性があるため結果は古いものとする")
+    }
+
+    func testInodeChangeOnMoveIsUnverifiedNotAlarm() async throws {
+        // FAT などでは移動で inode が変わる。名前・サイズ・更新日時が同じなら取り違えとはしない
+        let original = try fs.metadata(atPath: "/Users/me/work/big.mov").get()
+        var moved = original
+        moved.identity = FileIdentity(device: 1, inode: 999_999)
+        trasher.substitute = moved
+        let session = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/big.mov"), in: session).get()
+        let outcome = try service.moveToTrash(candidate, in: session).get()
+        XCTAssertFalse(outcome.isVerified)
+    }
+
+    func testReferencePointingElsewhereAborts() async throws {
+        trasher.resolvedPathOverride = "/Users/me/Library/prefs.plist"
+        let session = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/big.mov"), in: session).get()
+        guard case .failure(.changedSinceScan) = service.moveToTrash(candidate, in: session) else {
+            return XCTFail("参照が確認した場所を指していなければ中止する")
+        }
+        XCTAssertTrue(trasher.paths.isEmpty)
+    }
+
+    func testAncestorAboveRootReplacedBySymlinkAborts() async throws {
+        let session = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/big.mov"), in: session).get()
+        // スキャン対象を含むツリーごと別の場所へ移され、元の場所にリンクが置かれた
+        fs.replace("/Users/me", with: FileMetadata(kind: .symbolicLink, identity: FileIdentity(device: 1, inode: 31_337)))
+        guard case .failure(.changedSinceScan) = service.moveToTrash(candidate, in: session) else {
+            return XCTFail("スキャン対象より上のフォルダの差し替えを検知して中止する")
+        }
+        XCTAssertTrue(trasher.paths.isEmpty)
+    }
+
+    func testUnreadableDuringVerificationIsCannotVerify() async throws {
+        let session = try await completedSession(root: "/Users/me/work")
+        let service = service()
+        let candidate = try service.candidate(for: id(session, "/Users/me/work/sub/a.bin"), in: session).get()
+        fs.failMetadata("/Users/me/work/sub", error: FileSystemError(kind: .permissionDenied, code: 13, message: "アクセスが拒否されました"))
+        guard case .failure(.cannotVerify) = service.moveToTrash(candidate, in: session) else {
+            return XCTFail("読み取れないことを「変わった」と言わない")
+        }
+    }
+
+    func testVolumeRulesApplyWhenScanRootIsInsideMount() async throws {
+        // /Users/me/work/disk に別ボリューム（device 5）があり、その中の Users をスキャンする
+        fs.dir("/Users/me/work/disk", device: 5).dir("/Users/me/work/disk/Users", device: 5)
+        fs.dir("/Users/me/work/disk/Users/bob", device: 5).dir("/Users/me/work/disk/Users/bob/Library", device: 5)
+        fs.file("/Users/me/work/disk/Users/bob/Library/x", allocated: 1, device: 5)
+        let session = try await completedSession(root: "/Users/me/work/disk/Users")
+        let service = service()
+        XCTAssertEqual(
+            service.candidate(for: id(session, "/Users/me/work/disk/Users/bob/Library/x"), in: session),
+            .failure(.protectedLocation("/Users/me/work/disk/Users/*/Library"))
+        )
+    }
+
+    func testVolumeRulesApplyToMountsOutsideVolumesFolder() async throws {
+        // /Users/me/work/disk に別ボリューム（device 5）がマウントされている
+        fs.dir("/Users/me/work/disk", device: 5).dir("/Users/me/work/disk/.Trashes", device: 5)
+        fs.file("/Users/me/work/disk/.Trashes/t", allocated: 1, device: 5).file("/Users/me/work/disk/data.bin", allocated: 1, device: 5)
+        let session = try await completedSession(root: "/Users/me/work/disk")
+        let service = service()
+        XCTAssertEqual(
+            service.candidate(for: id(session, "/Users/me/work/disk/.Trashes/t"), in: session),
+            .failure(.protectedLocation("/Users/me/work/disk/.Trashes"))
+        )
+        XCTAssertNotNil(try? service.candidate(for: id(session, "/Users/me/work/disk/data.bin"), in: session).get())
     }
 
     func testRejectsHardLinkedFiles() async throws {

@@ -32,6 +32,14 @@ public struct POSIXFileSystem: FileSystemProvider {
     }
 
     public func listDirectory(atPath path: String, expectedIdentity: FileIdentity?) -> Result<DirectoryListing, FileSystemError> {
+        listDirectory(atPath: path, expectedIdentity: expectedIdentity, isCancelled: { false })
+    }
+
+    public func listDirectory(
+        atPath path: String,
+        expectedIdentity: FileIdentity?,
+        isCancelled: () -> Bool
+    ) -> Result<DirectoryListing, FileSystemError> {
         let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else {
             let code = errno
@@ -59,6 +67,10 @@ public struct POSIXFileSystem: FileSystemProvider {
 
         var entries: [DirectoryEntry] = []
         while true {
+            // 巨大なフォルダでもキャンセルを待たせない（それまでの項目を返し、走査側が中断を記録する）
+            if entries.count % 1024 == 1023, isCancelled() {
+                break
+            }
             errno = 0
             guard let entry = readdir(dir) else {
                 let code = errno
@@ -94,7 +106,9 @@ public struct POSIXFileSystem: FileSystemProvider {
         metadata.linkCount = Int(info.st_nlink)
         if kind == .file {
             metadata.logicalSize = Int64(info.st_size)
-            metadata.allocatedSize = Int64(info.st_blocks) * 512
+            // 異常な st_blocks（FUSE・ネットワークなど）で桁あふれさせず、不明として扱う
+            let (allocated, overflow) = Int64(info.st_blocks).multipliedReportingOverflow(by: 512)
+            metadata.allocatedSize = overflow || allocated < 0 ? nil : allocated
         }
         if kind == .directory {
             if metadata.isDataless {
@@ -122,18 +136,38 @@ public struct POSIXFileSystem: FileSystemProvider {
         }
     }
 
+    private static let strerrorLock = NSLock()
+
+    /// strerror は再入可能ではないため、走査スレッドと UI 側の確認が同時に呼ばないようにする。
+    static func systemMessage(_ code: Int32) -> String {
+        strerrorLock.lock()
+        defer { strerrorLock.unlock() }
+        return String(cString: strerror(code))
+    }
+
+    /// errno を利用者向けの短い日本語の説明に変える。調査用に errno の番号を末尾に残す。
     static func error(_ code: Int32) -> FileSystemError {
-        let message = String(cString: strerror(code))
+        func message(_ text: String) -> String {
+            "\(text)（errno \(code)）"
+        }
         switch code {
         case EACCES, EPERM:
-            return FileSystemError(kind: .permissionDenied, code: code, message: message)
-        case ENOENT, ENOTDIR:
-            return FileSystemError(kind: .notFound, code: code, message: message)
+            return FileSystemError(kind: .permissionDenied, code: code, message: message("アクセスが拒否されました"))
+        case ENOENT:
+            return FileSystemError(kind: .notFound, code: code, message: message("見つかりません。走査中に移動・削除された可能性があります"))
+        case ENOTDIR:
+            return FileSystemError(kind: .notFound, code: code, message: message("フォルダではなくなりました"))
         case EDEADLK:
             // dataless 項目の取得を抑止した結果
-            return FileSystemError(kind: .cloudOnly, code: code, message: "クラウド上にだけある項目です")
+            return FileSystemError(kind: .cloudOnly, code: code, message: "クラウド上にのみある項目です")
+        case ENAMETOOLONG:
+            return FileSystemError(kind: .other, code: code, message: message("パスが長すぎるため読み取れません"))
+        case EIO:
+            return FileSystemError(kind: .other, code: code, message: message("ディスクの読み取りでエラーが起きました"))
+        case ETIMEDOUT:
+            return FileSystemError(kind: .other, code: code, message: message("応答がないため読み取れませんでした"))
         default:
-            return FileSystemError(kind: .other, code: code, message: message)
+            return FileSystemError(kind: .other, code: code, message: message("読み取りに失敗しました: \(systemMessage(code))"))
         }
     }
 
@@ -159,7 +193,12 @@ public struct POSIXFileSystem: FileSystemProvider {
 
     private static func createdDate(_ info: stat) -> Date? {
         #if canImport(Darwin)
-        return date(info.st_birthtimespec)
+        // 作成日時を持たないファイルシステムでは 0 が入るため、1970年ではなく不明とする
+        let birth = info.st_birthtimespec
+        if birth.tv_sec == 0, birth.tv_nsec == 0 {
+            return nil
+        }
+        return date(birth)
         #else
         return nil
         #endif

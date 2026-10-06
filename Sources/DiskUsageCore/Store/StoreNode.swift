@@ -105,8 +105,9 @@ extension ScanStore {
 
         /// 祖先への差分加算。件数は Int32 で持ち、溢れたら上限で止める。
         mutating func add(_ delta: SizeSummary) {
-            storedSummary.knownLogicalBytes &+= delta.knownLogicalBytes
-            storedSummary.knownAllocatedBytes &+= delta.knownAllocatedBytes
+            // 巨大な sparse file などで負の合計に回り込まないよう、上限で止める
+            storedSummary.knownLogicalBytes = TreemapLayout.saturatingAdd(storedSummary.knownLogicalBytes, delta.knownLogicalBytes)
+            storedSummary.knownAllocatedBytes = TreemapLayout.saturatingAdd(storedSummary.knownAllocatedBytes, delta.knownAllocatedBytes)
             storedSummary.unknownLogicalItems = PackedSummary.adding(storedSummary.unknownLogicalItems, delta.unknownLogicalItems)
             storedSummary.unknownAllocatedItems = PackedSummary.adding(storedSummary.unknownAllocatedItems, delta.unknownAllocatedItems)
             storedSummary.unreadableLocations = PackedSummary.adding(storedSummary.unreadableLocations, delta.unreadableLocations)

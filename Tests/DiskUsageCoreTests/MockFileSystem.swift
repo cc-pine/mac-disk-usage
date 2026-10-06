@@ -9,15 +9,27 @@ final class MockFileSystem: FileSystemProvider, @unchecked Sendable {
         var metadataError: FileSystemError?
         /// 列挙は成功するが、この件数を返した後に中断する
         var interruptAfter: Int?
+        var interruptError = FileSystemError(kind: .other, code: 5, message: "Input/output error")
     }
 
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private var childNames: [String: [String]] = [:]
     private var nextInode: UInt64 = 100
+    private var storedOnList: (@Sendable (String) -> Void)?
+    private var storedListedPaths: [String] = []
+
     /// 列挙するたびに呼ばれる（キャンセル競合のテスト用）
-    var onList: (@Sendable (String) -> Void)?
-    private(set) var listedPaths: [String] = []
+    var onList: (@Sendable (String) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return storedOnList }
+        set { lock.lock(); storedOnList = newValue; lock.unlock() }
+    }
+
+    var listedPaths: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedListedPaths
+    }
 
     init(rootDevice: UInt64 = 1) {
         entries["/"] = Entry(metadata: FileMetadata(kind: .directory, identity: FileIdentity(device: rootDevice, inode: 2)))
@@ -47,16 +59,19 @@ final class MockFileSystem: FileSystemProvider, @unchecked Sendable {
         entries[path]?.listError = FileSystemError(kind: .permissionDenied, code: 13, message: "Permission denied")
     }
 
-    func failMetadata(_ path: String) {
+    func failMetadata(_ path: String, error: FileSystemError = FileSystemError(kind: .notFound, code: 2, message: "No such file or directory")) {
         lock.lock()
         defer { lock.unlock() }
-        entries[path]?.metadataError = FileSystemError(kind: .notFound, code: 2, message: "No such file or directory")
+        entries[path]?.metadataError = error
     }
 
-    func interruptListing(_ path: String, after count: Int) {
+    func interruptListing(_ path: String, after count: Int, error: FileSystemError? = nil) {
         lock.lock()
         defer { lock.unlock() }
         entries[path]?.interruptAfter = count
+        if let error {
+            entries[path]?.interruptError = error
+        }
     }
 
     func remove(_ path: String) {
@@ -66,6 +81,11 @@ final class MockFileSystem: FileSystemProvider, @unchecked Sendable {
         if let parent = PathUtilities.parent(of: path) {
             childNames[parent]?.removeAll { $0 == PathUtilities.lastComponent(of: path) }
         }
+    }
+
+    /// 既存の親の下に、指定のメタデータで項目を置く（移動の再現用）
+    func place(_ path: String, _ metadata: FileMetadata) {
+        _ = add(path, metadata)
     }
 
     func replace(_ path: String, with metadata: FileMetadata) {
@@ -88,8 +108,8 @@ final class MockFileSystem: FileSystemProvider, @unchecked Sendable {
 
     func listDirectory(atPath path: String, expectedIdentity: FileIdentity?) -> Result<DirectoryListing, FileSystemError> {
         lock.lock()
-        listedPaths.append(path)
-        let hook = onList
+        storedListedPaths.append(path)
+        let hook = storedOnList
         lock.unlock()
         hook?(path)
 
@@ -108,7 +128,7 @@ final class MockFileSystem: FileSystemProvider, @unchecked Sendable {
         var listError: FileSystemError?
         if let limit = entry.interruptAfter {
             names = Array(names.prefix(limit))
-            listError = FileSystemError(kind: .other, code: 5, message: "Input/output error")
+            listError = entry.interruptError
         }
         let listed = names.map { name -> DirectoryEntry in
             let child = path == "/" ? "/" + name : path + "/" + name
@@ -127,6 +147,8 @@ final class MockFileSystem: FileSystemProvider, @unchecked Sendable {
         if let inode {
             return FileIdentity(device: device, inode: inode)
         }
+        lock.lock()
+        defer { lock.unlock() }
         nextInode += 1
         return FileIdentity(device: device, inode: nextInode)
     }

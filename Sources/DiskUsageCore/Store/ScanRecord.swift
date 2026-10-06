@@ -55,7 +55,7 @@ public enum ListingOutcome: Sendable, Equatable {
     /// ディレクトリ自体を読めなかった。配下の件数は推測しない。
     case failed(AccessState, String)
     /// 途中で列挙エラーが起きた、またはキャンセルで中断した
-    case interrupted(String?)
+    case interrupted(String?, access: AccessState = .error)
 }
 
 /// 保存用バッチの1要素。

@@ -25,7 +25,9 @@ public final class ScanSession: @unchecked Sendable {
     public let scope: ScanScope
     public let store: ScanStore
 
-    /// ストリームの onTermination が finish の中から同期的に呼ばれても詰まらないよう再帰ロックにする
+    /// ストリームの onTermination が finish の中から同期的に呼ばれても詰まらないよう再帰ロックにする。
+    /// 取る順序は ScanCoordinator.lock → このロック → ストアの statsLock。onTermination では
+    /// このセッションの状態だけを触り、コーディネーターなど他のロックを取らないこと（順序が逆転する）。
     private let lock = NSRecursiveLock()
     private var state: ScanState = .scanning
     private var cancelRequested = false
@@ -92,7 +94,8 @@ public final class ScanSession: @unchecked Sendable {
         return progressLocked()
     }
 
-    /// キャンセルを要求する。状態はすぐ `cancelling` になり、列挙が止まってから `cancelled` に確定する。
+    /// キャンセルを要求する。状態はすぐ `cancelling` になり、処理中の OS 呼び出しが戻って
+    /// 列挙が止まってから `cancelled` に確定する（REQUIREMENTS §6）。
     public func cancel() {
         lock.lock()
         guard state == .scanning else {
@@ -154,6 +157,9 @@ public final class ScanSession: @unchecked Sendable {
         store.finalize()
         // 大きなファイル一覧の全件索引を、終端を通知する前にこのスレッドで作っておく
         store.prepareFileIndex()
+        // 確定後のストアを読むだけなので、セッションのロックを持つ前に調べる
+        // （ロックを持ったままストアを待つと、MainActor からの状態の読み取りが止まる）
+        let missingInformation = hasMissingInformation()
         lock.lock()
         guard !state.isTerminal else {
             lock.unlock()
@@ -170,7 +176,7 @@ public final class ScanSession: @unchecked Sendable {
                 next = .failed
                 failureDescription = error.message
             case .finished:
-                next = hasMissingInformation() ? .completedWithErrors : .completed
+                next = missingInformation ? .completedWithErrors : .completed
             }
         }
         assert(state.canTransition(to: next), "\(state) → \(next) は許可されていない遷移")

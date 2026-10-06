@@ -66,12 +66,20 @@ public struct FileSystemScanner: Sendable {
             return .rootFailed(error)
         }
 
+        // クラウド上だけにあるフォルダは、列挙すると取得が始まるためルートでも開かない
+        let rootIsCloudOnly = rootMetadata.kind == .directory && rootMetadata.isDataless
         emitter.emit(.item(DiscoveredItem(
             id: rootID, parentID: nil, name: scope.displayName, kind: rootMetadata.kind,
             isPackage: rootMetadata.mayBePackage,
+            logicalSize: rootMetadata.logicalSize, allocatedSize: rootMetadata.allocatedSize,
             modifiedDate: rootMetadata.modifiedDate, createdDate: rootMetadata.createdDate,
-            fileIdentity: rootMetadata.identity
+            accessState: rootIsCloudOnly ? .notScanned : .readable,
+            fileIdentity: rootMetadata.identity,
+            errorDescription: rootIsCloudOnly ? "クラウド上にのみあるフォルダです" : nil
         )))
+        if rootIsCloudOnly {
+            return .rootFailed(FileSystemError(kind: .cloudOnly, code: 0, message: "クラウド上にのみあるフォルダのため、ダウンロードを避けて走査しません"))
+        }
         guard rootMetadata.kind == .directory else {
             let error = FileSystemError(kind: .other, code: 0, message: "フォルダではありません")
             return .rootFailed(error)
@@ -91,7 +99,7 @@ public struct FileSystemScanner: Sendable {
                 return .cancelled
             }
             let listing: DirectoryListing
-            switch provider.listDirectory(atPath: directory.path, expectedIdentity: directory.identity) {
+            switch provider.listDirectory(atPath: directory.path, expectedIdentity: directory.identity, isCancelled: isCancelled) {
             case .success(let result):
                 listing = result
             case .failure(let error):
@@ -134,7 +142,7 @@ public struct FileSystemScanner: Sendable {
                         modifiedDate: metadata.modifiedDate, createdDate: metadata.createdDate,
                         accessState: cloudOnly ? .notScanned : .readable,
                         fileIdentity: metadata.identity, exclusionReason: exclusion,
-                        errorDescription: cloudOnly ? "クラウド上にだけあるフォルダです" : nil
+                        errorDescription: cloudOnly ? "クラウド上にのみあるフォルダです" : nil
                     )))
                     if isDirectory, exclusion == nil, !cloudOnly {
                         stack.append((id, path, metadata.identity))
@@ -142,7 +150,7 @@ public struct FileSystemScanner: Sendable {
                 }
             }
             if let error = listing.error {
-                emitter.emit(.directoryListed(directory.id, .interrupted(error.message)))
+                emitter.emit(.directoryListed(directory.id, .interrupted(error.message, access: error.accessState)))
             } else {
                 emitter.emit(.directoryListed(directory.id, .complete))
             }

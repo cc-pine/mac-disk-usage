@@ -16,7 +16,8 @@ struct StartView: View {
                             .tag(ScanTarget.volume(volume))
                     }
                 }
-                if case .folder(let url)? = model.selectedTarget {
+                // 選んだフォルダは、別の対象を選んでも一覧に残す
+                if let url = model.chosenFolder {
                     Section("フォルダ") {
                         Label(FileManager.default.displayName(atPath: url.path), systemImage: "folder")
                             .help(url.path)
@@ -31,7 +32,7 @@ struct StartView: View {
                 Button {
                     choosingFolder = true
                 } label: {
-                    Label("フォルダを選ぶ…", systemImage: "folder.badge.plus")
+                    Label("フォルダを選択…", systemImage: "folder.badge.plus")
                 }
                 if let target = model.selectedTarget {
                     Text("対象: \(target.displayName)")
@@ -42,7 +43,7 @@ struct StartView: View {
                 }
                 HStack {
                     Button {
-                        Task { await model.startScan() }
+                        model.requestStartScan()
                     } label: {
                         Text(model.isScanActive ? "対象を変えてスキャン" : "スキャン")
                             .frame(maxWidth: .infinity)
@@ -70,7 +71,7 @@ struct StartView: View {
                 } label: {
                     Label("ボリュームを再読み込み", systemImage: "arrow.clockwise")
                 }
-                .help("ボリューム一覧と容量情報を取り直す")
+                .help("ボリューム一覧と容量情報を更新します")
             }
         }
     }

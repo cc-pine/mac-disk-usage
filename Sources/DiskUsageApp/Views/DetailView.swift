@@ -25,7 +25,7 @@ struct DetailView: View {
                         LabeledContent("サイズ不明の項目", value: "\(item.sizeSummary.unknownAllocatedItems.formatted()) 件")
                     }
                     if item.kind == .directory, item.sizeSummary.unreadableLocations > 0 {
-                        LabeledContent("読めなかった場所", value: "\(item.sizeSummary.unreadableLocations.formatted()) か所")
+                        LabeledContent("読み取れなかった場所", value: "\(item.sizeSummary.unreadableLocations.formatted()) か所")
                     }
                 }
                 Section("日時") {
@@ -41,7 +41,7 @@ struct DetailView: View {
                     if let reason = item.exclusionReason {
                         Text(reason == .otherVolume
                              ? "別の対象として選ぶとスキャンできます。読み取りに失敗したわけではありません。"
-                             : "方針により走査していません。読み取りに失敗したわけではありません。")
+                             : "走査範囲の規則により走査していません。読み取りに失敗したわけではありません。")
                             .foregroundStyle(.secondary)
                     }
                     if item.accessState == .denied {
@@ -59,6 +59,15 @@ struct DetailView: View {
                         Label("Finder で表示", systemImage: "folder")
                     }
                     .disabled(!model.canRevealSelection)
+
+                    if model.tab != .list, item.parentID != nil {
+                        Button {
+                            model.showSelectionInFolder()
+                        } label: {
+                            Label("フォルダ内で表示", systemImage: "list.bullet.indent")
+                        }
+                        .help("この項目を含むフォルダを一覧で開き、項目を選択します（⌘L）")
+                    }
 
                     TrashButton()
                 }

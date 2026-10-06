@@ -7,7 +7,7 @@ public enum DisplayText {
             return "—"
         }
         if item.traversalState == .excluded {
-            return "対象外"
+            return "除外"
         }
         guard let bytes = item.displayAllocatedBytes else {
             return "不明"
@@ -19,6 +19,9 @@ public enum DisplayText {
     public static func logicalSize(of item: ScanItem) -> String {
         if item.isNotCounted {
             return "—（集計対象外）"
+        }
+        if item.traversalState == .excluded {
+            return "除外"
         }
         guard let bytes = item.displayLogicalBytes else {
             return "不明"
@@ -48,8 +51,8 @@ public enum DisplayText {
 
     public static func access(of item: ScanItem) -> String {
         if let reason = item.exclusionReason {
-            // 範囲外の項目は中身を読んでいないため「読み取り可」と示さない
-            return "未読込・\(exclusion(reason))"
+            // 除外した項目は中身を読んでいないため「読み取り可」と示さない
+            return "除外（\(exclusion(reason))）"
         }
         var parts: [String] = []
         switch item.accessState {
@@ -62,10 +65,10 @@ public enum DisplayText {
             parts.append(exclusion(reason))
         } else if item.kind == .directory {
             switch item.traversalState {
-            case .pending: parts.append("走査中")
+            case .pending: parts.append("スキャン中")
             case .partial: parts.append("一部のみ走査")
             case .complete: break
-            case .excluded: parts.append("範囲外")
+            case .excluded: parts.append("除外")
             }
         }
         return parts.joined(separator: "・")
@@ -73,9 +76,9 @@ public enum DisplayText {
 
     public static func exclusion(_ reason: ExclusionReason) -> String {
         switch reason {
-        case .otherVolume: return "別のボリュームのため対象外"
-        case .duplicatePath: return "同じフォルダへの別経路のため対象外"
-        case .scopeRule: return "走査範囲の規則により対象外"
+        case .otherVolume: return "別のボリューム"
+        case .duplicatePath: return "別経路"
+        case .scopeRule: return "範囲規則"
         }
     }
 
@@ -91,6 +94,24 @@ public enum DisplayText {
         case .failed?: base = "失敗"
         }
         return isStale ? "\(base)・結果が古くなっています" : base
+    }
+
+    /// 名前やパスを確認ダイアログなどに出すとき、改行などの制御文字や文字の向きを変える
+    /// 書式文字を目に見える形にする。名前で表示内容を偽装されないようにするため。
+    public static func visible(_ text: String) -> String {
+        var result = ""
+        for scalar in text.unicodeScalars {
+            let value = scalar.value
+            let isControl = value < 0x20 || value == 0x7F || (0x80...0x9F).contains(value)
+            let isBidiControl = value == 0x200E || value == 0x200F || (0x202A...0x202E).contains(value)
+                || (0x2066...0x2069).contains(value) || value == 0x061C
+            if isControl || isBidiControl {
+                result += String(format: "<U+%04X>", value)
+            } else {
+                result.unicodeScalars.append(scalar)
+            }
+        }
+        return result
     }
 
     public static func elapsed(_ interval: TimeInterval) -> String {

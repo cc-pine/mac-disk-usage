@@ -13,7 +13,7 @@ enum ResultTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .list: return "一覧"
-        case .treemap: return "Treemap"
+        case .treemap: return "ツリーマップ"
         case .largeFiles: return "大きなファイル"
         }
     }
@@ -47,6 +47,8 @@ final class ScanViewModel {
     @ObservationIgnored private let actions: ItemActionService
     @ObservationIgnored private var updatesTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    /// 実行中の問い合わせが対象とするスキャン。別のスキャンの問い合わせは待たない
+    @ObservationIgnored private var refreshScanID: ScanID?
     @ObservationIgnored private var refreshPending = false
 
     // MARK: 開始画面
@@ -102,24 +104,43 @@ final class ScanViewModel {
         return !state.isTerminal
     }
 
+    /// 走査中に同じ対象を選んだままのときは、黙ってやり直さないよう開始できなくする。
     var canStartScan: Bool {
-        selectedTarget != nil && !isPreparingScan && !isTrashing
+        guard let selectedTarget, !isPreparingScan, !isTrashing, !isTrashDialogPresented else { return false }
+        return !(isScanActive && selectedTarget == scannedTarget)
     }
 
     var canRescan: Bool {
         scannedTarget != nil && !isScanActive && !isPreparingScan && !isTrashing
     }
 
-    // MARK: - 問い合わせ結果（現在の条件と一致するものだけ）
+    // MARK: - 問い合わせ結果
 
+    /// 表示中の一覧・Treemap が、現在の条件の結果をまだ受け取っていないか。
+    /// 読み込み中も前の結果を表示したまま（表やフォーカスを壊さず）、この値で読み込み中を示す。
+    var isLoadingView: Bool {
+        guard let query = currentQuery else { return false }
+        guard let snapshot else { return true }
+        return snapshot.query.directoryID != query.directoryID
+            || snapshot.query.childrenOffset != query.childrenOffset
+            || snapshot.query.largeFilesOffset != query.largeFilesOffset
+    }
+
+    /// 現在のフォルダ。問い合わせ結果が現在のフォルダと一致する場合だけ返す。
     var directory: ScanItem? {
         guard let snapshot, snapshot.query.directoryID == directoryID else { return nil }
         return snapshot.directory
     }
 
+    /// 現在のフォルダのパンくず。親への移動の判定に使うため、一致する場合だけ返す。
     var breadcrumbs: [ScanItem] {
         guard let snapshot, snapshot.query.directoryID == directoryID else { return [] }
         return snapshot.breadcrumbs
+    }
+
+    /// 表示用のパンくず。読み込み中は前のフォルダのものを表示し続ける。
+    var displayedBreadcrumbs: [ScanItem] {
+        snapshot?.breadcrumbs ?? []
     }
 
     var scanRoot: ScanItem? {
@@ -127,47 +148,82 @@ final class ScanViewModel {
     }
 
     var children: ItemPage? {
-        guard let snapshot, snapshot.query.directoryID == directoryID, snapshot.query.childrenOffset == childrenOffset else { return nil }
-        return snapshot.children
+        snapshot?.children
     }
 
     var treemap: TreemapSnapshot? {
-        guard let snapshot, snapshot.query.directoryID == directoryID else { return nil }
-        return snapshot.treemap
+        snapshot?.treemap
     }
 
     var largeFiles: ItemPage? {
-        guard let snapshot, snapshot.query.largeFilesOffset == largeFilesOffset else { return nil }
-        return snapshot.largeFiles
+        snapshot?.largeFiles
     }
 
+    /// 大きなファイル一覧の各行の親フォルダのパス
+    var largeFileFolders: [ItemID: String] {
+        snapshot?.largeFileFolders ?? [:]
+    }
+
+    /// 選択項目。問い合わせ結果が届くまでは、表示中の行のデータを使って詳細パネルを空にしない。
     var selectedItem: ScanItem? {
-        guard let snapshot, let selectionID, snapshot.query.selectionID == selectionID else { return nil }
-        return snapshot.selectedItem
+        guard let selectionID else { return nil }
+        if let snapshot, snapshot.query.selectionID == selectionID {
+            return snapshot.selectedItem
+        }
+        let visible = (children?.items ?? []) + (largeFiles?.items ?? []) + (treemap?.items ?? [])
+        return visible.first { $0.id == selectionID }
     }
 
     var selectedPath: String? {
-        guard selectedItem != nil else { return nil }
-        return snapshot?.selectedPath
+        guard let snapshot, let selectionID, snapshot.query.selectionID == selectionID else { return nil }
+        return snapshot.selectedPath
     }
 
-    /// ゴミ箱ボタンを有効にするか。理由は詳細パネルに表示する。
+    /// ゴミ箱ボタンを有効にするか。理由は詳細パネルに表示する。最新の判定が届くまでは nil。
     var trashAvailability: Result<TrashCandidate, TrashBlockReason>? {
-        guard !isTrashing, selectedItem != nil else { return nil }
-        return snapshot?.trashAvailability
+        guard !isTrashing, let snapshot, let selectionID, snapshot.query.selectionID == selectionID else { return nil }
+        return snapshot.trashAvailability
     }
 
     // MARK: - 開始・キャンセル・再スキャン
 
+    /// 選んだフォルダ。サイドバーで別の対象を選んでも一覧から消さない。
+    private(set) var chosenFolder: URL?
+    /// 走査中に別の対象を選んで開始しようとしたときの確認
+    var isSwitchConfirmationPresented = false
+    @ObservationIgnored private var isLoadingVolumes = false
+
+    /// ボリュームの容量問い合わせは応答しないネットワークマウントなどで待つことがあるため、
+    /// MainActor の外で行う。
     func loadVolumes() {
-        volumes = VolumeEntry.mountedVolumes()
-        if selectedTarget == nil {
-            selectedTarget = volumes.first.map(ScanTarget.volume)
+        guard !isLoadingVolumes else { return }
+        isLoadingVolumes = true
+        Task { [weak self] in
+            let volumes = await Task.detached(priority: .userInitiated) {
+                VolumeEntry.mountedVolumes()
+            }.value
+            guard let self else { return }
+            self.isLoadingVolumes = false
+            self.volumes = volumes
+            if self.selectedTarget == nil {
+                self.selectedTarget = volumes.first.map(ScanTarget.volume)
+            }
         }
     }
 
     func chooseFolder(_ url: URL) {
+        chosenFolder = url
         selectedTarget = .folder(url)
+    }
+
+    /// 開始操作。走査中に別の対象を選んでいる場合は、中止してよいかを確かめる。
+    func requestStartScan() {
+        guard canStartScan else { return }
+        if isScanActive {
+            isSwitchConfirmationPresented = true
+        } else {
+            Task { await startScan() }
+        }
     }
 
     /// 対象を走査する。実行中のスキャンがあれば、キャンセル完了を待ってから始める。
@@ -181,7 +237,13 @@ final class ScanViewModel {
             progress = current.progress
             _ = await current.waitUntilFinished()
         }
-        guard let scope = ScopeResolver.scope(forPath: target.path, isVolume: target.isVolume) else {
+        // realpath と lstat を伴うため MainActor の外で解決する
+        let path = target.path
+        let isVolume = target.isVolume
+        let resolved = await Task.detached(priority: .userInitiated) {
+            ScopeResolver.scope(forPath: path, isVolume: isVolume)
+        }.value
+        guard let scope = resolved else {
             message = UserMessage(title: "スキャンを開始できません", detail: "「\(target.displayName)」の場所を確認できませんでした。")
             return
         }
@@ -189,9 +251,9 @@ final class ScanViewModel {
             let session = try coordinator.start(scope: scope)
             attach(session, target: target)
         } catch ScanCoordinatorError.fileOperationInProgress {
-            message = UserMessage(title: "スキャンを開始できません", detail: "ゴミ箱への移動が終わってから、もう一度試してください。")
+            message = UserMessage(title: "スキャンを開始できません", detail: "ゴミ箱への移動が終わってから、もう一度お試しください。")
         } catch {
-            message = UserMessage(title: "スキャンを開始できません", detail: "前のスキャンの停止を待っています。少し待ってからもう一度試してください。")
+            message = UserMessage(title: "スキャンを開始できません", detail: "前のスキャンを停止しています。しばらくしてからもう一度お試しください。")
         }
     }
 
@@ -206,6 +268,18 @@ final class ScanViewModel {
         await startScan(target)
     }
 
+    /// ボリューム容量を OS から取り直す。応答しないマウントで待たないよう MainActor の外で行う。
+    private func refreshCapacity(for session: ScanSession) {
+        let rootPath = session.scope.rootPath
+        Task { [weak self] in
+            let capacity = await Task.detached(priority: .utility) {
+                VolumeCapacity.fetch(forPath: rootPath)
+            }.value
+            guard let self, self.session === session else { return }
+            self.capacity = capacity
+        }
+    }
+
     private func attach(_ session: ScanSession, target: ScanTarget) {
         updatesTask?.cancel()
         self.session = session
@@ -213,7 +287,8 @@ final class ScanViewModel {
         selectedTarget = target
         progress = session.progress
         result = session.result
-        capacity = VolumeCapacity.fetch(forPath: session.scope.rootPath)
+        capacity = nil
+        refreshCapacity(for: session)
         directoryID = ItemID(0)
         childrenOffset = 0
         largeFilesOffset = 0
@@ -236,32 +311,37 @@ final class ScanViewModel {
 
     // MARK: - ナビゲーション
 
-    func open(_ id: ItemID) {
-        guard let session, let item = session.store.item(id), item.kind == .directory else { return }
-        directoryID = id
+    /// フォルダを開く。項目は表示中の行やパンくずから受け取り、MainActor でストアを引かない。
+    func open(_ item: ScanItem) {
+        guard item.kind == .directory, item.traversalState != .excluded else { return }
+        directoryID = item.id
         childrenOffset = 0
         refresh()
     }
 
     /// ビューの描画中に評価されるため、ストアのロックを取らず問い合わせ結果のパンくずから判定する。
+    /// 大きなファイル一覧では表示中のフォルダが見えないため、親への移動はしない。
     var canGoUp: Bool {
-        breadcrumbs.count > 1
+        tab != .largeFiles && breadcrumbs.count > 1
     }
 
+    /// 親フォルダへ移り、元のフォルダを選択したうえで、その行が見えるページを表示する。
     func goUp() {
         // パンくずは現在のフォルダと一致する場合だけ返るので、表示より古い親へ移ることはない
         let trail = breadcrumbs
-        guard trail.count > 1, let current = directoryID else { return }
-        directoryID = trail[trail.count - 2].id
+        guard canGoUp, let current = directoryID, let session else { return }
+        let parent = trail[trail.count - 2].id
+        directoryID = parent
         childrenOffset = 0
         selectionID = current
         refresh()
+        reveal(current, in: parent, session: session)
     }
 
     /// 一覧の行やタイルを確定操作したとき。フォルダなら開き、それ以外は選択する。
     func activate(_ item: ScanItem) {
         if item.kind == .directory, item.traversalState != .excluded {
-            open(item.id)
+            open(item)
         } else {
             selectionID = item.id
         }
@@ -269,8 +349,18 @@ final class ScanViewModel {
 
     /// 選択中の項目を開く（キーボード操作用）。
     func openSelection() {
-        guard let session, let selectionID, let item = session.store.item(selectionID) else { return }
+        guard let item = selectedItem else { return }
         activate(item)
+    }
+
+    /// 大きなファイル一覧で選んだファイルを、一覧タブの親フォルダ内で表示する。
+    func showSelectionInFolder() {
+        guard let session, let item = selectedItem, let parent = item.parentID else { return }
+        tab = .list
+        directoryID = parent
+        childrenOffset = 0
+        refresh()
+        reveal(item.id, in: parent, session: session)
     }
 
     func showChildrenPage(offset: Int) {
@@ -283,11 +373,11 @@ final class ScanViewModel {
         refresh()
     }
 
-    /// Treemap の「その他」から一覧へ移り、まとめられた項目の先頭を表示・選択する。
+    /// Treemap の「その他」から一覧へ移り、まとめられた項目の先頭を最初の行に表示して選択する。
     func showOthersInList(firstIndex: Int) {
         guard let session, let directoryID else { return }
         tab = .list
-        childrenOffset = (firstIndex / Self.pageSize) * Self.pageSize
+        childrenOffset = max(0, firstIndex)
         refresh()
         let store = session.store
         Task { [weak self] in
@@ -296,6 +386,22 @@ final class ScanViewModel {
             }.value
             guard let self, self.session === session, self.directoryID == directoryID, let first else { return }
             self.selectionID = first
+        }
+    }
+
+    /// 子の並び順での位置を調べ、その行が先頭に来るページを表示する（表はスクロール位置を指定できないため）。
+    private func reveal(_ child: ItemID, in parent: ItemID, session: ScanSession) {
+        let store = session.store
+        let startOffset = childrenOffset
+        Task { [weak self] in
+            let position = await Task.detached(priority: .userInitiated) {
+                store.position(of: child, in: parent)
+            }.value
+            // 待っている間に利用者がページやフォルダを変えていたら上書きしない
+            guard let self, self.session === session, self.directoryID == parent,
+                  self.childrenOffset == startOffset, let position else { return }
+            self.childrenOffset = position
+            self.refresh()
         }
     }
 
@@ -311,15 +417,23 @@ final class ScanViewModel {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
-    /// 確認ダイアログを開く前に、最新の状態で可否を確かめる。
+    /// 確認ダイアログを開く前に、最新の状態で可否を確かめる。lstat などを伴うため MainActor の外で行う。
     func requestTrash() {
         guard let session, let item = selectedItem, !isTrashing else { return }
-        switch actions.candidate(for: item.id, in: session) {
-        case .success(let candidate):
-            pendingTrash = candidate
-            isTrashDialogPresented = true
-        case .failure(let reason):
-            message = UserMessage(title: "ゴミ箱へ移動できません", detail: reason.message)
+        let actions = self.actions
+        let id = item.id
+        Task { [weak self] in
+            let availability = await Task.detached(priority: .userInitiated) {
+                actions.candidate(for: id, in: session)
+            }.value
+            guard let self, self.session === session, self.selectionID == id else { return }
+            switch availability {
+            case .success(let candidate):
+                self.pendingTrash = candidate
+                self.isTrashDialogPresented = true
+            case .failure(let reason):
+                self.message = UserMessage(title: "ゴミ箱へ移動できません", detail: reason.message)
+            }
         }
     }
 
@@ -332,7 +446,11 @@ final class ScanViewModel {
     func confirmTrash(_ candidate: TrashCandidate) async {
         pendingTrash = nil
         isTrashDialogPresented = false
-        guard let session, session.scanID == candidate.scanID, !isTrashing else { return }
+        guard let session, session.scanID == candidate.scanID else {
+            message = UserMessage(title: "ゴミ箱へ移動しませんでした", detail: "確認している間に結果が新しいスキャンに置き換わりました。項目を選び直してください。")
+            return
+        }
+        guard !isTrashing else { return }
         isTrashing = true
         let actions = self.actions
         let outcome = await Task.detached(priority: .userInitiated) {
@@ -346,10 +464,23 @@ final class ScanViewModel {
         if actions.isMoved(candidate.itemID, in: session) {
             movedItems.insert(candidate.itemID)
             // 空き容量は OS から取り直す。移動したサイズを解放量として扱わない。
-            capacity = VolumeCapacity.fetch(forPath: session.scope.rootPath)
-            volumes = VolumeEntry.mountedVolumes()
+            refreshCapacity(for: session)
+            loadVolumes()
         }
-        if case .failure(let failure) = outcome {
+        switch outcome {
+        case .success(let moved) where !moved.isVerified:
+            message = UserMessage(
+                title: "ゴミ箱へ移動しました",
+                detail: "ゴミ箱に入った項目が「\(DisplayText.visible(candidate.name))」と同じであることを確認できませんでした（移動先を読み取れない、またはファイルシステムが識別情報を引き継がないため）。ゴミ箱で確認してください。"
+            )
+        case .success:
+            break
+        case .failure(.unexpectedItemMoved):
+            // 何かが移動した可能性があるため「移動できなかった」とは書かない
+            if case .failure(let failure) = outcome {
+                message = UserMessage(title: "ゴミ箱の中身を確認してください", detail: failure.message)
+            }
+        case .failure(let failure):
             message = UserMessage(title: "ゴミ箱へ移動できませんでした", detail: failure.message)
         }
         refresh()
@@ -374,6 +505,7 @@ final class ScanViewModel {
         let children: ItemPage
         let treemap: TreemapSnapshot
         let largeFiles: ItemPage
+        let largeFileFolders: [ItemID: String]
         let selectedItem: ScanItem?
         let selectedPath: String?
         let trashAvailability: Result<TrashCandidate, TrashBlockReason>?
@@ -391,10 +523,13 @@ final class ScanViewModel {
     /// 表示中の範囲を問い合わせ直す。実行中の問い合わせがあれば、終わってから一度だけやり直す。
     func refresh() {
         guard let session, let query = currentQuery else { return }
-        if refreshTask != nil {
+        if refreshTask != nil, refreshScanID == query.scanID {
             refreshPending = true
             return
         }
+        // 旧スキャンの問い合わせが残っていても待たない（その応答は scanID の照合で捨てる）
+        refreshPending = false
+        refreshScanID = query.scanID
         let store = session.store
         let actions = self.actions
         refreshTask = Task { [weak self] in
@@ -402,6 +537,7 @@ final class ScanViewModel {
                 ScanViewModel.run(query, store: store, session: session, actions: actions)
             }.value
             guard let self else { return }
+            guard self.refreshScanID == query.scanID else { return }
             self.refreshTask = nil
             // 旧スキャンの応答は捨てる。条件が変わっていても、一致する部分だけは表示に使える
             if self.session?.scanID == query.scanID {
@@ -423,6 +559,12 @@ final class ScanViewModel {
         let children = store.children(of: query.directoryID, offset: query.childrenOffset, limit: pageSize)
         let treemapData = store.childrenForTreemap(of: query.directoryID, limit: treemapLimit)
         let largeFiles = store.largestFiles(offset: query.largeFilesOffset, limit: pageSize)
+        var largeFileFolders: [ItemID: String] = [:]
+        for item in largeFiles.items {
+            if let parent = item.parentID, let path = store.path(of: parent) {
+                largeFileFolders[item.id] = path
+            }
+        }
         let selected = query.selectionID.flatMap { store.item($0) }
         let selectedPath = query.selectionID.flatMap { store.path(of: $0) }
         let trashAvailability = query.selectionID.map { actions.candidate(for: $0, in: session) }
@@ -438,6 +580,7 @@ final class ScanViewModel {
                 remainderBytes: treemapData.remainderKnownBytes
             ),
             largeFiles: largeFiles,
+            largeFileFolders: largeFileFolders,
             selectedItem: selected,
             selectedPath: selectedPath,
             trashAvailability: trashAvailability

@@ -272,14 +272,14 @@ public final class ScanStore: @unchecked Sendable {
                 problemIDs.append(Int32(index))
                 addToAncestors(of: index, SizeSummary(unreadableLocations: 1))
             }
-        case .interrupted(let message):
+        case .interrupted(let message, let access):
             // 列挙しきれなかった直下の項目がある
             nodes[index].subtreeIncomplete = true
             markUnvisited(index)
             if let message {
                 errorDescriptions[Int32(index)] = message
                 if nodes[index].accessState == .readable {
-                    nodes[index].accessState = .error
+                    nodes[index].accessState = access
                     counts.problemItems += 1
                     problemIDs.append(Int32(index))
                 }
@@ -361,39 +361,74 @@ public final class ScanStore: @unchecked Sendable {
 
     /// 直下の項目をサイズ順（既知サイズの降順・不明は末尾・同サイズは名前順）でページ取得する。
     public func children(of id: ItemID, offset: Int = 0, limit: Int = .max) -> ItemPage {
+        let sorted = sortedChildren(id.index)
         lock.lock()
         defer { lock.unlock() }
-        guard nodes.indices.contains(id.index) else {
+        guard let sorted else {
             return ItemPage(items: [], offset: 0, totalCount: 0, revision: revision, isProvisional: false)
         }
-        return page(of: sortedChildren(id.index), offset: offset, limit: limit, isProvisional: false)
+        return page(of: sorted, offset: offset, limit: limit, isProvisional: false)
     }
 
-    /// 同じ版・同じフォルダへの繰り返しの問い合わせ（ページ送り・Treemap）で再ソートしない。
-    private func sortedChildren(_ index: Int) -> [Int32] {
-        if let cache = childrenCache, cache.directory == index, cache.revision == revision {
-            return cache.ids
+    /// 直下の ID をサイズ順に返す。ロックを持たずに呼ぶ。
+    ///
+    /// 鍵（サイズと名前）だけをロック内で写し、並べ替えはロックの外で行う。数十万件のフォルダを
+    /// 表示していても、保存処理と他の問い合わせを待たせない。同じ版・同じフォルダへの繰り返しの
+    /// 問い合わせ（ページ送り・Treemap）では並べ直さない。
+    private func sortedChildren(_ index: Int) -> [Int32]? {
+        lock.lock()
+        guard nodes.indices.contains(index) else {
+            lock.unlock()
+            return nil
         }
+        if let cache = childrenCache, cache.directory == index, cache.revision == revision {
+            let ids = cache.ids
+            lock.unlock()
+            return ids
+        }
+        let sortRevision = revision
+        let keyed = children[index].map { (id: $0, size: sortKey(Int($0)), name: nodes[Int($0)].name) }
+        lock.unlock()
+
         // 兄弟は親が同じで名前も一意なので、パスによる比較は不要
-        let ids = sortBySize(children[index], pathTieBreak: false)
-        childrenCache = (index, revision, ids)
-        return ids
+        let sorted = keyed.sorted { lhs, rhs in
+            let order = Self.compareSize(lhs.size, rhs.size)
+            if order != 0 {
+                return order < 0
+            }
+            if lhs.name != rhs.name {
+                return lhs.name < rhs.name
+            }
+            return lhs.id < rhs.id
+        }.map { $0.id }
+
+        lock.lock()
+        if revision == sortRevision {
+            childrenCache = (index, sortRevision, sorted)
+        }
+        lock.unlock()
+        return sorted
+    }
+
+    /// `child` が `parent` の直下でサイズ順の何番目か（0 始まり）。直下にない場合は nil。
+    public func position(of child: ItemID, in parent: ItemID) -> Int? {
+        sortedChildren(parent.index)?.firstIndex(of: child.rawValue)
     }
 
     /// Treemap 用に、サイズ順の上位 `limit` 件と、残りのうちサイズが 0 より大きい項目の件数・合計を同じ版で返す。
     public func childrenForTreemap(of id: ItemID, limit: Int) -> (page: ItemPage, remainderCount: Int, remainderKnownBytes: Int64) {
+        let sorted = sortedChildren(id.index)
         lock.lock()
         defer { lock.unlock() }
-        guard nodes.indices.contains(id.index) else {
+        guard let sorted else {
             return (ItemPage(items: [], offset: 0, totalCount: 0, revision: revision, isProvisional: false), 0, 0)
         }
-        let sorted = sortedChildren(id.index)
         let page = page(of: sorted, offset: 0, limit: limit, isProvisional: false)
         var restCount = 0
         var restBytes: Int64 = 0
         for child in sorted.dropFirst(page.items.count) {
-            // サイズ順なので、0・不明が現れたら以降に面積を持つ項目はない
-            guard let bytes = sortKey(Int(child)), bytes > 0 else { break }
+            // 並べた時点より後にサイズが変わることがあるため、途中で打ち切らずに数える
+            guard let bytes = sortKey(Int(child)), bytes > 0 else { continue }
             restCount += 1
             restBytes = TreemapLayout.saturatingAdd(restBytes, bytes)
         }
@@ -407,30 +442,36 @@ public final class ScanStore: @unchecked Sendable {
     public func largestFiles(offset: Int = 0, limit: Int = 100) -> ItemPage {
         lock.lock()
         if isFinalized, sortedFileIndex == nil, !isPreparingFileIndex {
-            // 誰も索引を作っていなければ自分で作る。並べ替えはロックの外で行い、他の問い合わせを待たせない。
-            // 作成中なら待たずに暫定の上位を返す（終端イベントは索引の完成後に届く）。
+            // 誰も索引を作っていなければ、このロックの中で作成役を引き受けてから外で作る
+            // （確認と引き受けを分けると、作成中の別スレッドを待つ側に回ってしまう）
+            isPreparingFileIndex = true
             lock.unlock()
-            prepareFileIndex()
+            buildFileIndex()
             lock.lock()
         }
-        defer { lock.unlock() }
         if isFinalized, let sortedFileIndex {
+            defer { lock.unlock() }
             return page(of: sortedFileIndex, offset: offset, limit: limit, isProvisional: false)
         }
-        if provisionalCache?.revision != revision {
-            provisionalCache = (revision, sortBySize(topFiles.elements, pathTieBreak: true))
+        // スキャン中、または別スレッドが全件の索引を作成中は、暫定の上位を返して待たない
+        if let cache = provisionalCache, cache.revision == revision {
+            defer { lock.unlock() }
+            return page(of: cache.ids, offset: offset, limit: limit, isProvisional: true)
         }
-        return page(of: provisionalCache!.ids, offset: offset, limit: limit, isProvisional: true)
+        // 暫定の上位は最大 provisionalFileLimit 件なので、ロックの中で並べる。
+        // ノード配列の参照をロックの外へ持ち出すと、次の保存で配列全体の複製が起きるため避ける。
+        defer { lock.unlock() }
+        let sorted = sortBySize(topFiles.elements, pathTieBreak: true)
+        provisionalCache = (revision, sorted)
+        return page(of: sorted, offset: offset, limit: limit, isProvisional: true)
     }
 
     /// 確定後に全件の索引を前もって作る。保存スレッドから呼ぶ。
     ///
-    /// 確定後のノードは変更されないため、配列の参照を取ってロックの外で並べ、
-    /// その間も UI の問い合わせを待たせない。
+    /// 別スレッドが作成中なら完成を待ってから戻る（終端イベントを索引の完成後に送るため）。
     public func prepareFileIndex() {
         lock.lock()
         if isPreparingFileIndex {
-            // 他のスレッドが作成中なら完成を待つ（終端イベントを索引の完成後に送るため）
             lock.unlock()
             indexBuilt.lock()
             while !isFileIndexBuilt {
@@ -444,6 +485,18 @@ public final class ScanStore: @unchecked Sendable {
             return
         }
         isPreparingFileIndex = true
+        lock.unlock()
+        buildFileIndex()
+    }
+
+    /// 作成役を引き受けた（isPreparingFileIndex を立てた）スレッドだけが呼ぶ。
+    ///
+    /// 確定後のノードは変更されないため、配列の参照を取ってロックの外で並べ、
+    /// その間も UI の問い合わせを待たせない。
+    private func buildFileIndex() {
+        lock.lock()
+        // 確定後は apply が保存しないため、配列の参照を持ち出しても複製は起きない
+        assert(isFinalized, "全件索引は確定後にだけ作る")
         let snapshot = nodes
         let ids = fileIDs
         lock.unlock()
@@ -563,25 +616,6 @@ public final class ScanStore: @unchecked Sendable {
         }
     }
 
-    /// 既知サイズの降順、不明は末尾、同サイズは名前・相対パスの順。
-    private func sizeOrder(_ lhs: Int32, _ rhs: Int32) -> Bool {
-        let order = Self.compareSize(sortKey(Int(lhs)), sortKey(Int(rhs)))
-        if order != 0 {
-            return order < 0
-        }
-        let l = Int(lhs), r = Int(rhs)
-        if nodes[l].name != nodes[r].name {
-            return nodes[l].name < nodes[r].name
-        }
-        if nodes[l].parent != nodes[r].parent {
-            let lp = pathLocked(Int(nodes[l].parent)), rp = pathLocked(Int(nodes[r].parent))
-            if lp != rp {
-                return lp < rp
-            }
-        }
-        return lhs < rhs
-    }
-
     /// サイズ順の比較。負なら lhs が先。不明（nil）は末尾。
     private static func compareSize(_ lhs: Int64?, _ rhs: Int64?) -> Int {
         switch (lhs, rhs) {
@@ -646,9 +680,11 @@ public final class ScanStore: @unchecked Sendable {
         }
     }
 
-    /// 暫定索引から先に追い出す側か（サイズ順で後ろ側か）。
+    /// 暫定索引から先に追い出す側か。保存処理の中で呼ぶため、名前やパスは比べずサイズと ID だけで決める
+    /// （表示時には全候補を名前・パスの順に並べ直す）。
     private func lowerPriority(_ lhs: Int32, _ rhs: Int32) -> Bool {
-        sizeOrder(rhs, lhs)
+        let order = Self.compareSize(sortKey(Int(rhs)), sortKey(Int(lhs)))
+        return order != 0 ? order < 0 : lhs > rhs
     }
 }
 

@@ -4,70 +4,78 @@ import DiskUsageCore
 /// 表示中フォルダの直下を、既知の割り当て済みサイズに比例して描く。
 ///
 /// クリックで選択、ダブルクリックでフォルダを開く。小さい項目は「その他」にまとめ、
-/// 選ぶと一覧の該当ページへ移る。同じ操作は一覧とキーボードでも行える。
+/// 選ぶと一覧の該当行へ移る。同じ操作は一覧とキーボードでも行える。
 struct TreemapView: View {
     @Environment(ScanViewModel.self) private var model
+    private let othersRowHeight: Double = 28
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let directory = model.directory, directory.isSizeIncomplete {
-                Label("部分的な結果です。読めなかった場所・未走査の場所は面積に含みません。", systemImage: "exclamationmark.triangle")
+                Label("部分的な結果です。読み取れなかった場所・未走査の場所は面積に含みません。", systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
             }
             GeometryReader { proxy in
-                let result = layout(in: proxy.size)
-                if model.treemap == nil {
-                    // 表示中フォルダの問い合わせ結果がまだ届いていない
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if result.tiles.isEmpty {
-                    ContentUnavailableView(
-                        "表示できる容量がありません",
-                        systemImage: "square.grid.2x2",
-                        description: Text("このフォルダの直下に、サイズが分かる 0 bytes より大きい項目がありません。一覧ではすべての項目を確認できます。")
-                    )
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        TreemapCanvas(
-                            tiles: result.tiles,
-                            items: itemsByID,
-                            moved: model.movedItems,
-                            selection: model.selectionID,
-                            select: { select($0, result: result) },
-                            activate: activate
+                if let snapshot = model.treemap {
+                    let result = layout(snapshot, in: proxy.size)
+                    if result.tiles.isEmpty, !model.isLoadingView {
+                        ContentUnavailableView(
+                            "表示できる容量がありません",
+                            systemImage: "square.grid.2x2",
+                            description: Text("このフォルダの直下には、サイズが 0 バイトより大きいと分かっている項目がありません。すべての項目は一覧で確認できます。")
                         )
-                        if let others = result.others {
-                            // 「その他」のタイルが小さすぎて押せない場合も一覧へ移れるようにする
-                            Button("その他 \(others.count.formatted()) 件（\(ByteFormatting.string(others.bytes))）を一覧で表示") {
-                                model.showOthersInList(firstIndex: result.itemTileCount)
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            TreemapCanvas(
+                                tiles: result.tiles,
+                                items: Dictionary(uniqueKeysWithValues: snapshot.items.map { ($0.id, $0) }),
+                                moved: model.movedItems,
+                                selection: model.selectionID,
+                                select: { select($0, result: result) },
+                                activate: { activate($0, snapshot: snapshot) }
+                            )
+                            // 読み込み中は前のフォルダの配置を薄く残す
+                            .opacity(model.isLoadingView ? 0.5 : 1)
+                            .overlay {
+                                if model.isLoadingView {
+                                    ProgressView()
+                                }
                             }
-                            .buttonStyle(.link)
+                            if let others = result.others {
+                                // 「その他」のタイルが小さすぎて押せない場合も一覧へ移れるようにする
+                                Button("その他 \(others.count.formatted()) 件（\(ByteFormatting.string(others.bytes))）を一覧で表示") {
+                                    model.showOthersInList(firstIndex: result.itemTileCount)
+                                }
+                                .buttonStyle(.link)
+                                .frame(height: othersRowHeight - 6)
+                            }
                         }
                     }
+                } else {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .padding([.horizontal, .bottom], 12)
         }
     }
 
-    private var itemsByID: [ItemID: ScanItem] {
-        Dictionary(uniqueKeysWithValues: (model.treemap?.items ?? []).map { ($0.id, $0) })
-    }
-
-    private func layout(in size: CGSize) -> TreemapResult {
-        guard let snapshot = model.treemap, snapshot.directoryID == model.directoryID else { return .empty }
-        // 「その他」の案内行の高さを差し引いて配置する
-        let height = max(0, Double(size.height) - 28)
-        return TreemapLayout.layout(
-            snapshot.items.map { (id: $0.id, bytes: $0.displayAllocatedBytes) },
-            in: TreemapRect(x: 0, y: 0, width: Double(size.width), height: height),
-            minimumTileArea: 48,
-            maximumTiles: ScanViewModel.treemapLimit,
-            remainder: (snapshot.remainderCount, snapshot.remainderBytes)
-        )
+    /// 「その他」がある場合だけ、その案内行の高さを差し引いて配置し直す。
+    private func layout(_ snapshot: TreemapSnapshot, in size: CGSize) -> TreemapResult {
+        func compute(height: Double) -> TreemapResult {
+            TreemapLayout.layout(
+                snapshot.items.map { (id: $0.id, bytes: $0.displayAllocatedBytes) },
+                in: TreemapRect(x: 0, y: 0, width: Double(size.width), height: max(0, height)),
+                minimumTileArea: 48,
+                maximumTiles: ScanViewModel.treemapLimit,
+                remainder: (snapshot.remainderCount, snapshot.remainderBytes)
+            )
+        }
+        let full = compute(height: Double(size.height))
+        return full.others == nil ? full : compute(height: Double(size.height) - othersRowHeight)
     }
 
     private func select(_ tile: TreemapTile, result: TreemapResult) {
@@ -79,8 +87,8 @@ struct TreemapView: View {
         }
     }
 
-    private func activate(_ tile: TreemapTile) {
-        guard case .item(let id) = tile.content, let item = itemsByID[id] else { return }
+    private func activate(_ tile: TreemapTile, snapshot: TreemapSnapshot) {
+        guard case .item(let id) = tile.content, let item = snapshot.items.first(where: { $0.id == id }) else { return }
         model.activate(item)
     }
 }
@@ -112,20 +120,19 @@ private struct TreemapCanvas: View {
             }
         }
         .contentShape(Rectangle())
-        .gesture(
-            SpatialTapGesture(count: 2).onEnded { value in
-                if let tile = tile(at: value.location) {
-                    activate(tile)
-                }
+        // 1回目のクリックですぐ選択し（ダブルクリックの判定を待たない）、2回目で開く
+        .gesture(SpatialTapGesture(count: 2).onEnded { value in
+            if let tile = tile(at: value.location) {
+                activate(tile)
             }
-            .exclusively(before: SpatialTapGesture(count: 1).onEnded { value in
-                if let tile = tile(at: value.location) {
-                    select(tile)
-                }
-            })
-        )
+        })
+        .simultaneousGesture(SpatialTapGesture(count: 1).onEnded { value in
+            if let tile = tile(at: value.location) {
+                select(tile)
+            }
+        })
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("容量の Treemap。一覧タブで同じ項目をキーボード操作できます。")
+        .accessibilityLabel("容量のツリーマップ。一覧タブでも同じ項目をキーボードで操作できます。")
     }
 
     private func tile(at point: CGPoint) -> TreemapTile? {

@@ -21,7 +21,7 @@ open build/DiskUsage.app
 swift run DiskUsageApp
 ```
 
-起動ディスク全体を読むには、システム設定の「プライバシーとセキュリティ」→「フルディスクアクセス」でアプリを許可する。許可しなくても読める範囲は走査でき、読めなかった場所は結果画面の「読み取れなかった項目」から確認できる。
+起動ディスクのより多くの場所を読み取るには、システム設定の「プライバシーとセキュリティ」→「フルディスクアクセス」でアプリを許可する（許可しても読み取れない場所は残る）。許可しなくても読み取れる範囲は走査でき、読み取れなかった場所は結果画面下部の「未取得」から確認できる。
 
 ## テスト
 
@@ -40,7 +40,8 @@ MDU_BENCHMARK=1 swift test -c release --filter BenchmarkTests  # 合成した100
 Sources/
 ├── DiskUsageCore/          プラットフォームに依存しない中核（Linux でもテスト可能）
 │   ├── Model/              ScanItem・SizeSummary・ScanScope・ScanState・VolumeCapacity
-│   ├── FileSystem/         FileSystemProvider と lstat / openat による実装
+│   ├── Support/            10進単位の容量表記（ByteFormatting）、成分単位のパス操作（PathUtilities）
+│   ├── FileSystem/         FileSystemProvider と、lstat・open(O_NOFOLLOW)・fdopendir・fstatat による実装
 │   ├── Scan/               FileSystemScanner・ScanCoordinator・ScanSession・ScopeResolver
 │   ├── Store/              ScanStore（ID 索引のノード、祖先への集計、ファイル索引）
 │   ├── Treemap/            squarified Treemap のレイアウト計算
@@ -60,9 +61,17 @@ Sources/
 
 ## 性能の計測値
 
-合成した 1,000,000 ファイル・11,111 フォルダのツリー（ディスク I/O なし）での計測。実ディスクでの評価環境と合格基準は未定（[DECISIONS.md](DECISIONS.md)）。
+合成した 1,000,000 ファイル・11,111 フォルダのツリー（ディスク I/O なし）での計測（2026-10-06、コミット d118b7f）。ピーク RSS は、下記の 200,000 ファイルの計測と同じテストプロセスで続けて実行したときの最大値。実ディスクでの評価環境と合格基準は未定（[DECISIONS.md](DECISIONS.md)）。
 
-| 環境 | 走査 | 走査中の問い合わせの最大待ち | ピーク RSS | ノード |
+| 環境 | 走査 | 走査中の問い合わせの最大待ち | ピーク RSS | ノード1件の大きさ |
 |---|---|---|---|---|
-| GitHub Actions macos-latest（release） | 約 2.0 秒 | 約 0.01 秒 | 約 300 MB | 112 bytes |
-| WSL2 Ubuntu 24.04（release） | 約 1.7 秒 | 約 0.05 秒 | 約 210 MB | 112 bytes |
+| GitHub Actions macos-15（release） | 約 2.8 秒 | 約 0.03 秒 | 約 410 MB | 112 バイト |
+| WSL2 Ubuntu 24.04（release） | 約 1.5 秒 | 約 0.03 秒 | 約 250 MB | 112 バイト |
+
+1つのフォルダに 200,000 ファイルがある場合、走査中に直下一覧を並べ替えている間も、別スレッドの項目取得の待ちは最大で約 0.004 秒（macos-15）・約 0.01 秒（WSL2）だった。
+
+## 既知の制限
+
+- アプリの画面を起動しての操作確認は、まだ行っていない（[TASKS.md](TASKS.md)）。
+- 応答しないネットワークマウントなどで OS の呼び出しが戻らない場合、キャンセルの確定を待ち続け、アプリを再起動するまで次のスキャンを始められない（[DECISIONS.md](DECISIONS.md) の「キャンセルと停止の確定」）。
+- 実ディスクでの性能の評価環境と合格基準は未定。上の計測値は合成データでのもの。
