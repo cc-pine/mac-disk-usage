@@ -12,7 +12,7 @@ struct ResultView: View {
             Divider()
             BreadcrumbBar()
             Divider()
-            Picker("表示", selection: $model.tab) {
+            Picker(L10n.viewPicker, selection: $model.tab) {
                 ForEach(ResultTab.allCases) { tab in
                     Text(tab.title).tag(tab)
                 }
@@ -54,21 +54,21 @@ private struct ResultHeader: View {
                     Text(DisplayText.state(model.state, isStale: model.result?.isStale ?? false))
                         .foregroundStyle(stateColor)
                     if let root = model.scanRoot {
-                        Text("走査集計: \(DisplayText.size(of: root))")
+                        Text(L10n.scanTotal(DisplayText.size(of: root)))
                             .font(.callout)
                     }
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 4) {
                     if let capacity = model.capacity, let total = capacity.totalBytes {
-                        Text("ボリューム: 使用 \(ByteFormatting.string(capacity.usedBytes)) / 全体 \(ByteFormatting.string(total))")
-                        Text("空き \(ByteFormatting.string(capacity.availableBytes))（\(DisplayText.time(capacity.fetchedAt)) 時点）")
+                        Text(L10n.volumeUsage(used: ByteFormatting.string(capacity.usedBytes), total: ByteFormatting.string(total)))
+                        Text(L10n.volumeAvailable(ByteFormatting.string(capacity.availableBytes), time: DisplayText.time(capacity.fetchedAt)))
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("ボリューム容量情報を取得できません")
+                        Text(L10n.volumeCapacityUnavailable)
                             .foregroundStyle(.secondary)
                     }
-                    Button("集計とボリューム使用量の違い") {
+                    Button(L10n.explainDifference) {
                         showsExplanation = true
                     }
                     .buttonStyle(.link)
@@ -81,17 +81,17 @@ private struct ResultHeader: View {
             }
             // 案内は横幅いっぱいの行にして、狭いウィンドウでも縦に伸びすぎないようにする
             if model.state == .failed, let reason = model.result?.failureDescription {
-                Banner(text: "スキャンできませんでした。理由: \(reason)", color: .red)
+                Banner(text: L10n.scanFailed(reason), color: .red)
                 if model.result?.counts.problemItems ?? 0 > 0 {
                     PermissionGuidance()
                 }
             } else if model.result?.wasForceStopped == true {
-                Banner(text: "停止の確認を待たずに中止しました。表示中の結果は中止した時点までのものです。応答しない場所（ネットワーク上のフォルダなど）を走査していた可能性があります。", color: .orange)
+                Banner(text: L10n.forceStoppedBanner, color: .orange)
             } else if let problems = model.progress?.counts.problemItems, problems > 0 {
-                Banner(text: "情報を取得できなかった場所があります（アクセス拒否・読み取りエラー・クラウド上のみの項目など）。画面下の「未取得」から確認できます。", color: .orange)
+                Banner(text: L10n.missingInfoBanner, color: .orange)
             }
             if model.result?.isStale == true {
-                Banner(text: "ゴミ箱へ移動した項目があります。表示中の容量は移動前のものです。最新の容量は再スキャンで確認してください。", color: .orange)
+                Banner(text: L10n.staleBanner, color: .orange)
             }
         }
         .padding(12)
@@ -126,13 +126,13 @@ private struct Banner: View {
 struct AggregationExplanation: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("走査集計はボリュームの使用量と一致しないことがあります")
+            Text(L10n.explanationTitle)
                 .font(.headline)
-            Text("・読み取れなかった場所や、除外した場所（別ボリューム・別経路など）は集計に含まれません。")
-            Text("・APFS のクローンやハードリンクは共有ブロックを区別せず、パスごとに数えます。")
-            Text("・スナップショットやパージ可能な領域、システム領域の一部は走査で見えません。")
-            Text("・割り当て済みサイズは、その項目だけが占める容量とは限らず、ゴミ箱へ移して空き容量が同じだけ増えるとも限りません。")
-            Text("・ボリューム容量は macOS が報告する値で、取得時刻の時点のものです。")
+            Text(L10n.explanationUnread)
+            Text(L10n.explanationClones)
+            Text(L10n.explanationSnapshots)
+            Text(L10n.explanationAllocated)
+            Text(L10n.explanationCapacity)
         }
         .font(.callout)
         .fixedSize(horizontal: false, vertical: true)
@@ -151,7 +151,7 @@ private struct BreadcrumbBar: View {
             } label: {
                 Image(systemName: "chevron.up")
             }
-            .help("親フォルダへ（⌘↑）")
+            .help(L10n.parentFolderHelp)
             .disabled(!model.canGoUp)
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -227,21 +227,21 @@ private struct StatusFooter: View {
     @ViewBuilder
     private var counts: some View {
         if let counts = model.progress?.counts {
-            Text("ファイル \(counts.files.formatted()) 件")
-            Text("フォルダ \(counts.directories.formatted()) 件")
-            Button("未取得 \(counts.problemItems.formatted()) 件") {
+            Text(L10n.filesCount(counts.files))
+            Text(L10n.foldersCount(counts.directories))
+            Button(L10n.missingCount(counts.problemItems)) {
                 sheet = .problems
             }
             .buttonStyle(.link)
             .foregroundStyle(counts.problemItems > 0 ? .orange : .secondary)
             .disabled(counts.problemItems == 0)
-            .help("アクセス拒否・読み取りエラー・クラウド上のみなど、情報を取得できなかった項目です。クリックすると一覧を表示します。")
-            Button("除外 \(counts.excludedItems.formatted()) 件") {
+            .help(L10n.missingHelp)
+            Button(L10n.excludedCount(counts.excludedItems)) {
                 sheet = .excluded
             }
             .buttonStyle(.link)
             .disabled(counts.excludedItems == 0)
-            .help("別ボリューム・別経路・デバイス領域など、走査範囲の規則により走査しなかった場所です。クリックすると一覧を表示します。")
+            .help(L10n.excludedHelp)
         }
     }
 
@@ -253,7 +253,7 @@ private struct StatusFooter: View {
                 Text("\(DisplayText.time(progress.startedAt))〜\(DisplayText.time(finished))")
                     .foregroundStyle(.secondary)
             } else {
-                Text("開始 \(DisplayText.time(progress.startedAt))")
+                Text(L10n.started(DisplayText.time(progress.startedAt)))
                     .foregroundStyle(.secondary)
             }
         }
@@ -269,16 +269,16 @@ private struct StatusFooter: View {
                     model.forceStopScan()
                 }
             } else {
-                Button("中止") {
+                Button(L10n.stop) {
                     model.cancelScan()
                 }
             }
         } else if model.session != nil {
-            Button("再スキャン") {
+            Button(L10n.rescan) {
                 Task { await model.rescan() }
             }
             .disabled(!model.canRescan)
-            .help("選んだ対象全体を走査し直し、結果を置き換えます")
+            .help(L10n.rescanHelp)
         }
     }
 }
@@ -290,10 +290,10 @@ private struct ElapsedText: View {
     var body: some View {
         if progress.finishedAt == nil {
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                Text("経過 \(DisplayText.elapsed(context.date.timeIntervalSince(progress.startedAt)))")
+                Text(L10n.elapsed(DisplayText.elapsed(context.date.timeIntervalSince(progress.startedAt))))
             }
         } else {
-            Text("所要 \(DisplayText.elapsed(progress.elapsed))")
+            Text(L10n.took(DisplayText.elapsed(progress.elapsed)))
         }
     }
 }
@@ -310,10 +310,10 @@ private struct ForceStopButton: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let waited = requestedAt.map { context.date.timeIntervalSince($0) } ?? 0
             if waited >= Self.delay {
-                Button("強制中止", action: action)
-                    .help("停止の確認を待たずに、ここまでの結果で中止します。応答しない場所（ネットワーク上のフォルダなど）で止まっている場合に使います。")
+                Button(L10n.forceStop, action: action)
+                    .help(L10n.forceStopHelp)
             } else {
-                Text("中止しています…")
+                Text(L10n.stopping)
                     .foregroundStyle(.secondary)
             }
         }

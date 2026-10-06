@@ -12,7 +12,7 @@ struct TreemapView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let directory = model.directory, directory.isSizeIncomplete {
-                Label("部分的な結果です。読み取れなかった場所・未走査の場所は面積に含みません。", systemImage: "exclamationmark.triangle")
+                Label(L10n.treemapPartial, systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .padding(.horizontal, 12)
@@ -23,9 +23,9 @@ struct TreemapView: View {
                     let result = layout(snapshot, in: proxy.size)
                     if result.tiles.isEmpty, !model.isLoadingView {
                         ContentUnavailableView(
-                            "表示できる容量がありません",
+                            L10n.treemapEmptyTitle,
                             systemImage: "square.grid.2x2",
-                            description: Text("このフォルダの直下には、サイズが 0 バイトより大きいと分かっている項目がありません。すべての項目は一覧で確認できます。")
+                            description: Text(L10n.treemapEmptyDetail)
                         )
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
@@ -46,7 +46,7 @@ struct TreemapView: View {
                             }
                             if let others = result.others {
                                 // 「その他」のタイルが小さすぎて押せない場合も一覧へ移れるようにする
-                                Button("その他 \(others.count.formatted()) 件（\(ByteFormatting.string(others.bytes))）を一覧で表示") {
+                                Button(L10n.treemapOthersLink(count: others.count, size: ByteFormatting.string(others.bytes))) {
                                     model.showOthersInList(firstIndex: result.itemTileCount)
                                 }
                                 .buttonStyle(.link)
@@ -132,7 +132,7 @@ private struct TreemapCanvas: View {
             }
         })
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("容量のツリーマップ。一覧タブでも同じ項目をキーボードで操作できます。")
+        .accessibilityLabel(L10n.treemapAccessibility)
     }
 
     private func tile(at point: CGPoint) -> TreemapTile? {
@@ -155,11 +155,11 @@ private struct TreemapCanvas: View {
         case .item(let id):
             let name = items[id]?.name ?? ""
             if moved.contains(id) {
-                return "\(name)\nゴミ箱へ移動済み"
+                return "\(name)\n\(L10n.movedToTrash)"
             }
             return "\(name)\n\(ByteFormatting.string(tile.bytes))"
         case .others(let count, let bytes):
-            return "その他 \(count.formatted()) 件\n\(ByteFormatting.string(bytes))"
+            return "\(L10n.treemapOthersTile(count: count))\n\(ByteFormatting.string(bytes))"
         }
     }
 

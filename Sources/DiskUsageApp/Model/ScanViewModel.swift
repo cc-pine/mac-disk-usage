@@ -12,9 +12,9 @@ enum ResultTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .list: return "一覧"
-        case .treemap: return "ツリーマップ"
-        case .largeFiles: return "大きなファイル"
+        case .list: return L10n.tabList
+        case .treemap: return L10n.tabTreemap
+        case .largeFiles: return L10n.tabLargeFiles
         }
     }
 }
@@ -247,16 +247,16 @@ final class ScanViewModel {
             ScopeResolver.scope(forPath: path, isVolume: isVolume)
         }.value
         guard let scope = resolved else {
-            message = UserMessage(title: "スキャンを開始できません", detail: "「\(target.displayName)」の場所を確認できませんでした。")
+            message = UserMessage(title: L10n.cannotStartScan, detail: L10n.targetNotFound(target.displayName))
             return
         }
         do {
             let session = try coordinator.start(scope: scope)
             attach(session, target: target)
         } catch ScanCoordinatorError.fileOperationInProgress {
-            message = UserMessage(title: "スキャンを開始できません", detail: "ゴミ箱への移動が終わってから、もう一度お試しください。")
+            message = UserMessage(title: L10n.cannotStartScan, detail: L10n.waitForTrash)
         } catch {
-            message = UserMessage(title: "スキャンを開始できません", detail: "前のスキャンを停止しています。しばらくしてからもう一度お試しください。")
+            message = UserMessage(title: L10n.cannotStartScan, detail: L10n.previousScanStopping)
         }
     }
 
@@ -449,7 +449,7 @@ final class ScanViewModel {
                 self.pendingTrash = candidate
                 self.isTrashDialogPresented = true
             case .failure(let reason):
-                self.message = UserMessage(title: "ゴミ箱へ移動できません", detail: reason.message)
+                self.message = UserMessage(title: L10n.cannotMoveToTrash, detail: reason.message)
             }
         }
     }
@@ -464,7 +464,7 @@ final class ScanViewModel {
         pendingTrash = nil
         isTrashDialogPresented = false
         guard let session, session.scanID == candidate.scanID else {
-            message = UserMessage(title: "ゴミ箱へ移動しませんでした", detail: "確認している間に結果が新しいスキャンに置き換わりました。項目を選び直してください。")
+            message = UserMessage(title: L10n.didNotMoveToTrash, detail: L10n.resultsReplaced)
             return
         }
         guard !isTrashing else { return }
@@ -487,18 +487,18 @@ final class ScanViewModel {
         switch outcome {
         case .success(let moved) where !moved.isVerified:
             message = UserMessage(
-                title: "ゴミ箱へ移動しました",
-                detail: "ゴミ箱に入った項目が「\(DisplayText.visible(candidate.name))」と同じであることを確認できませんでした（移動先を読み取れない、またはファイルシステムが識別情報を引き継がないため）。ゴミ箱で確認してください。"
+                title: L10n.movedToTrashTitle,
+                detail: L10n.movedButUnverified(DisplayText.visible(candidate.name))
             )
         case .success:
             break
         case .failure(.unexpectedItemMoved):
             // 何かが移動した可能性があるため「移動できなかった」とは書かない
             if case .failure(let failure) = outcome {
-                message = UserMessage(title: "ゴミ箱の中身を確認してください", detail: failure.message)
+                message = UserMessage(title: L10n.checkTrashTitle, detail: failure.message)
             }
         case .failure(let failure):
-            message = UserMessage(title: "ゴミ箱へ移動できませんでした", detail: failure.message)
+            message = UserMessage(title: L10n.moveFailedTitle, detail: failure.message)
         }
         refresh()
     }

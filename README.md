@@ -1,6 +1,6 @@
 # ディスク使用量（macOS）
 
-選んだボリュームやフォルダを走査し、容量を多く使っているフォルダ・ファイルを一覧と Treemap で探すための macOS アプリ。Finder での表示と、確認付きの「ゴミ箱へ移動」（通常ファイル1件のみ）を備える。
+選んだボリュームやフォルダを走査し、容量を多く使っているフォルダ・ファイルを一覧とツリーマップで探すための macOS アプリ。Finder での表示と、確認付きの「ゴミ箱へ移動」（通常ファイル1件のみ）を備える。画面は日本語と英語に対応し、macOS の優先言語に従って切り替わる。
 
 - 要件: [REQUIREMENTS.md](REQUIREMENTS.md)
 - 設計: [ARCHITECTURE.md](ARCHITECTURE.md)
@@ -46,7 +46,7 @@ Sources/
 │   ├── Store/              ScanStore（ID 索引のノード、祖先への集計、ファイル索引）
 │   ├── Treemap/            squarified Treemap のレイアウト計算
 │   ├── Actions/            ゴミ箱移動の可否判定・再確認（ItemActionService・TrashPolicy）
-│   └── Presentation/       不明値を 0 と表示しない文言の組み立て
+│   └── Presentation/       日本語・英語の対訳表（L10n）と、不明値を 0 と表示しない文言の組み立て
 └── DiskUsageApp/           SwiftUI アプリ（macOS 専用）
     ├── Model/              ScanViewModel・ScanTarget
     └── Views/              開始画面・結果画面・一覧・Treemap・詳細・場所の一覧

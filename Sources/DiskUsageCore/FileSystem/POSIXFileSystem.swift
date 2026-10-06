@@ -44,7 +44,7 @@ public struct POSIXFileSystem: FileSystemProvider {
         guard fd >= 0 else {
             let code = errno
             if code == ELOOP || code == ENOTDIR {
-                return .failure(FileSystemError(kind: .changed, code: code, message: "フォルダではなくなりました"))
+                return .failure(FileSystemError(kind: .changed, code: code, message: L10n.errorNoLongerFolder))
             }
             return .failure(Self.error(code))
         }
@@ -56,7 +56,7 @@ public struct POSIXFileSystem: FileSystemProvider {
         }
         if let expectedIdentity, Self.identity(opened) != expectedIdentity {
             close(fd)
-            return .failure(FileSystemError(kind: .changed, code: 0, message: "走査中に別の項目へ置き換わりました"))
+            return .failure(FileSystemError(kind: .changed, code: 0, message: L10n.errorReplacedDuringScan))
         }
         guard let dir = fdopendir(fd) else {
             let code = errno
@@ -148,26 +148,26 @@ public struct POSIXFileSystem: FileSystemProvider {
     /// errno を利用者向けの短い日本語の説明に変える。調査用に errno の番号を末尾に残す。
     static func error(_ code: Int32) -> FileSystemError {
         func message(_ text: String) -> String {
-            "\(text)（errno \(code)）"
+            L10n.withErrno(text, code)
         }
         switch code {
         case EACCES, EPERM:
-            return FileSystemError(kind: .permissionDenied, code: code, message: message("アクセスが拒否されました"))
+            return FileSystemError(kind: .permissionDenied, code: code, message: message(L10n.errorPermissionDenied))
         case ENOENT:
-            return FileSystemError(kind: .notFound, code: code, message: message("見つかりません。走査中に移動・削除された可能性があります"))
+            return FileSystemError(kind: .notFound, code: code, message: message(L10n.errorNotFound))
         case ENOTDIR:
-            return FileSystemError(kind: .notFound, code: code, message: message("フォルダではなくなりました"))
+            return FileSystemError(kind: .notFound, code: code, message: message(L10n.errorNoLongerFolder))
         case EDEADLK:
             // dataless 項目の取得を抑止した結果
-            return FileSystemError(kind: .cloudOnly, code: code, message: "クラウド上にのみある項目です")
+            return FileSystemError(kind: .cloudOnly, code: code, message: L10n.errorCloudOnlyItem)
         case ENAMETOOLONG:
-            return FileSystemError(kind: .other, code: code, message: message("パスが長すぎるため読み取れません"))
+            return FileSystemError(kind: .other, code: code, message: message(L10n.errorPathTooLong))
         case EIO:
-            return FileSystemError(kind: .other, code: code, message: message("ディスクの読み取りでエラーが起きました"))
+            return FileSystemError(kind: .other, code: code, message: message(L10n.errorDiskIO))
         case ETIMEDOUT:
-            return FileSystemError(kind: .other, code: code, message: message("応答がないため読み取れませんでした"))
+            return FileSystemError(kind: .other, code: code, message: message(L10n.errorTimedOut))
         default:
-            return FileSystemError(kind: .other, code: code, message: message("読み取りに失敗しました: \(systemMessage(code))"))
+            return FileSystemError(kind: .other, code: code, message: message(L10n.errorReadFailed(systemMessage(code))))
         }
     }
 

@@ -2,6 +2,12 @@ import XCTest
 @testable import DiskUsageCore
 
 final class DisplayTextTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        // 日本語の文言を確かめる。英語は L10nTests で確かめる
+        L10n.language = .japanese
+    }
+
     private func item(
         kind: ItemKind,
         allocated: Int64? = nil,
@@ -20,7 +26,7 @@ final class DisplayTextTests: XCTestCase {
 
     func testUnknownAndUncountedAreNeverShownAsZero() {
         XCTAssertEqual(DisplayText.size(of: item(kind: .file, allocated: nil)), "不明")
-        XCTAssertEqual(DisplayText.size(of: item(kind: .file, allocated: 0)), "0 bytes")
+        XCTAssertEqual(DisplayText.size(of: item(kind: .file, allocated: 0)), "0 バイト")
         XCTAssertEqual(DisplayText.size(of: item(kind: .symbolicLink)), "—")
         XCTAssertEqual(DisplayText.size(of: item(kind: .directory, access: .denied, traversal: .partial)), "不明")
         XCTAssertEqual(DisplayText.size(of: item(kind: .directory, traversal: .excluded, exclusion: .otherVolume)), "除外")

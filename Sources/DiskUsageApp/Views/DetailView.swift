@@ -9,30 +9,30 @@ struct DetailView: View {
         if let item = model.selectedItem {
             Form {
                 Section {
-                    LabeledContent("名前", value: item.name)
-                    LabeledContent("場所") {
-                        Text(model.selectedPath ?? "不明")
+                    LabeledContent(L10n.detailName, value: item.name)
+                    LabeledContent(L10n.detailLocation) {
+                        Text(model.selectedPath ?? L10n.unknown)
                             .textSelection(.enabled)
                             .lineLimit(4)
                             .truncationMode(.middle)
                     }
-                    LabeledContent("種類", value: DisplayText.kind(of: item))
+                    LabeledContent(L10n.detailKind, value: DisplayText.kind(of: item))
                 }
-                Section("サイズ") {
-                    LabeledContent("割り当て済み", value: DisplayText.allocatedSizeDetail(of: item))
-                    LabeledContent("論理", value: DisplayText.logicalSize(of: item))
+                Section(L10n.detailSize) {
+                    LabeledContent(L10n.detailAllocated, value: DisplayText.allocatedSizeDetail(of: item))
+                    LabeledContent(L10n.detailLogical, value: DisplayText.logicalSize(of: item))
                     if item.kind == .directory, item.sizeSummary.unknownAllocatedItems > 0 {
-                        LabeledContent("サイズ不明の項目", value: "\(item.sizeSummary.unknownAllocatedItems.formatted()) 件")
+                        LabeledContent(L10n.detailUnknownItems, value: L10n.itemsCount(item.sizeSummary.unknownAllocatedItems))
                     }
                     if item.kind == .directory, item.sizeSummary.unreadableLocations > 0 {
-                        LabeledContent("読み取れなかった場所", value: "\(item.sizeSummary.unreadableLocations.formatted()) か所")
+                        LabeledContent(L10n.detailUnreadableLocations, value: L10n.locationsCount(item.sizeSummary.unreadableLocations))
                     }
                 }
-                Section("日時") {
-                    LabeledContent("更新", value: DisplayText.date(item.modifiedDate))
-                    LabeledContent("作成", value: DisplayText.date(item.createdDate))
+                Section(L10n.detailDates) {
+                    LabeledContent(L10n.detailModified, value: DisplayText.date(item.modifiedDate))
+                    LabeledContent(L10n.detailCreated, value: DisplayText.date(item.createdDate))
                 }
-                Section("状態") {
+                Section(L10n.detailStatus) {
                     Text(DisplayText.access(of: item))
                     if let error = item.errorDescription {
                         Text(error)
@@ -40,15 +40,15 @@ struct DetailView: View {
                     }
                     if let reason = item.exclusionReason {
                         Text(reason == .otherVolume
-                             ? "別の対象として選ぶとスキャンできます。読み取りに失敗したわけではありません。"
-                             : "走査範囲の規則により走査していません。読み取りに失敗したわけではありません。")
+                             ? L10n.detailExcludedOtherVolume
+                             : L10n.detailExcludedByRule)
                             .foregroundStyle(.secondary)
                     }
                     if item.accessState == .denied {
                         PermissionGuidance()
                     }
                     if model.movedItems.contains(item.id) {
-                        Label("ゴミ箱へ移動済み", systemImage: "trash")
+                        Label(L10n.movedToTrash, systemImage: "trash")
                             .foregroundStyle(.orange)
                     }
                 }
@@ -56,7 +56,7 @@ struct DetailView: View {
                     Button {
                         model.revealSelectionInFinder()
                     } label: {
-                        Label("Finder で表示", systemImage: "folder")
+                        Label(L10n.menuShowInFinder, systemImage: "folder")
                     }
                     .disabled(!model.canRevealSelection)
 
@@ -64,9 +64,9 @@ struct DetailView: View {
                         Button {
                             model.showSelectionInFolder()
                         } label: {
-                            Label("フォルダ内で表示", systemImage: "list.bullet.indent")
+                            Label(L10n.menuShowInFolder, systemImage: "list.bullet.indent")
                         }
-                        .help("この項目を含むフォルダを一覧で開き、項目を選択します（⌘L）")
+                        .help(L10n.showInFolderHelp)
                     }
 
                     TrashButton()
@@ -74,7 +74,7 @@ struct DetailView: View {
             }
             .formStyle(.grouped)
         } else {
-            ContentUnavailableView("項目を選択してください", systemImage: "info.circle")
+            ContentUnavailableView(L10n.selectItem, systemImage: "info.circle")
         }
     }
 }
@@ -88,7 +88,7 @@ private struct TrashButton: View {
             Button(role: .destructive) {
                 model.requestTrash()
             } label: {
-                Label(model.isTrashing ? "移動しています…" : "ゴミ箱へ移動…", systemImage: "trash")
+                Label(model.isTrashing ? L10n.moving : L10n.moveToTrashEllipsis, systemImage: "trash")
             }
             .disabled(!isAvailable(availability))
             if case .failure(let reason)? = availability {

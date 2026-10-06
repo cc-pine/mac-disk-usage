@@ -9,7 +9,7 @@ public enum ByteFormatting {
             return "-" + string(bytes == Int64.min ? Int64.max : -bytes)
         }
         if bytes < 1000 {
-            return "\(bytes) bytes"
+            return "\(bytes) \(L10n.bytesUnit)"
         }
         var value = Double(bytes)
         var unitIndex = 0
@@ -26,7 +26,7 @@ public enum ByteFormatting {
     }
 
     /// 取得不能な値を 0 に置き換えずに表記する。
-    public static func string(_ bytes: Int64?, unknown: String = "不明") -> String {
+    public static func string(_ bytes: Int64?, unknown: String = L10n.unknown) -> String {
         guard let bytes else { return unknown }
         return string(bytes)
     }
@@ -34,7 +34,7 @@ public enum ByteFormatting {
     /// 既知合計と不明件数を併記する。例: 「10.0 GB・一部未取得」
     public static func summaryString(_ summary: SizeSummary) -> String {
         let base = string(summary.knownAllocatedBytes)
-        return summary.isIncomplete ? "\(base)・一部未取得" : base
+        return summary.isIncomplete ? L10n.incomplete(base) : base
     }
 
     private static func formatFixed(_ value: Double, digits: Int) -> String {

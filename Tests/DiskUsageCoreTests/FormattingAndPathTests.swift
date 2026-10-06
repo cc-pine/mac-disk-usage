@@ -2,9 +2,15 @@ import XCTest
 @testable import DiskUsageCore
 
 final class FormattingAndPathTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        // 日本語の文言を確かめる。英語は L10nTests で確かめる
+        L10n.language = .japanese
+    }
+
     func testDecimalUnits() {
-        XCTAssertEqual(ByteFormatting.string(0), "0 bytes")
-        XCTAssertEqual(ByteFormatting.string(999), "999 bytes")
+        XCTAssertEqual(ByteFormatting.string(0), "0 バイト")
+        XCTAssertEqual(ByteFormatting.string(999), "999 バイト")
         XCTAssertEqual(ByteFormatting.string(1000), "1.0 KB")
         XCTAssertEqual(ByteFormatting.string(1_500_000), "1.5 MB")
         XCTAssertEqual(ByteFormatting.string(1_000_000_000), "1.0 GB")
@@ -18,7 +24,7 @@ final class FormattingAndPathTests: XCTestCase {
 
     func testUnknownIsNotZero() {
         XCTAssertEqual(ByteFormatting.string(nil), "不明")
-        XCTAssertEqual(ByteFormatting.string(Int64?.some(0)), "0 bytes")
+        XCTAssertEqual(ByteFormatting.string(Int64?.some(0)), "0 バイト")
     }
 
     func testSummaryMarksIncomplete() {

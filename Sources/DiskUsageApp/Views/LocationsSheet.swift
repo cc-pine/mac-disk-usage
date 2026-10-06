@@ -28,22 +28,22 @@ struct LocationsSheet: View {
             }
             if let page {
                 if page.totalCount == 0 {
-                    ContentUnavailableView("該当する場所はありません", systemImage: "checkmark.circle")
+                    ContentUnavailableView(L10n.noMatchingLocations, systemImage: "checkmark.circle")
                 } else {
                     Table(page.items) {
-                        TableColumn("場所") { located in
+                        TableColumn(L10n.columnLocation) { located in
                             Text(located.path)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .textSelection(.enabled)
                                 .help(located.path)
                         }
-                        TableColumn("状態") { located in
+                        TableColumn(L10n.columnStatus) { located in
                             Text(state(of: located.item))
                                 .foregroundStyle(category == .problems ? Color.orange : .secondary)
                         }
                         .width(min: 140, ideal: 200)
-                        TableColumn("詳細") { located in
+                        TableColumn(L10n.columnDetails) { located in
                             Text(located.item.errorDescription ?? "")
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
@@ -51,11 +51,11 @@ struct LocationsSheet: View {
                         .width(min: 120, ideal: 220)
                     }
                     HStack {
-                        Button("前へ") { load(page.offset - pageSize) }
+                        Button(L10n.previous) { load(page.offset - pageSize) }
                             .disabled(isLoading || page.offset == 0)
-                        Text("\(page.offset + 1)〜\(page.offset + page.items.count) 件目 / \(page.totalCount.formatted()) 件")
+                        Text(L10n.pageRange(from: page.offset + 1, to: page.offset + page.items.count, total: page.totalCount))
                             .monospacedDigit()
-                        Button("次へ") { load(page.offset + pageSize) }
+                        Button(L10n.next) { load(page.offset + pageSize) }
                             .disabled(isLoading || page.offset + page.items.count >= page.totalCount)
                         Spacer()
                     }
@@ -67,7 +67,7 @@ struct LocationsSheet: View {
             }
             HStack {
                 Spacer()
-                Button("閉じる") { dismiss() }
+                Button(L10n.close) { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
         }
@@ -80,15 +80,15 @@ struct LocationsSheet: View {
     }
 
     private var title: String {
-        category == .problems ? "情報を取得できなかった場所" : "除外した場所"
+        category == .problems ? L10n.problemsTitle : L10n.excludedTitle
     }
 
     private var explanation: String {
         switch category {
         case .problems:
-            return "アクセス拒否・読み取りエラーの場所と、ダウンロードを避けるため走査しなかったクラウド上のみの項目です。読み取れなかった部分の容量は集計に含まれず、読み取れなかったフォルダの中にある項目の数も分かりません。"
+            return L10n.problemsExplanation
         case .excluded:
-            return "二重に数えないため、または走査範囲の規則により、意図的に走査しなかった場所です（別のボリューム、同じフォルダへの別経路、起動ディスクの別名経路、デバイス領域など）。読み取りに失敗したわけではありません。外付けディスクは、別の対象として選択するとスキャンできます。"
+            return L10n.excludedExplanation
         }
     }
 
@@ -97,10 +97,10 @@ struct LocationsSheet: View {
             return DisplayText.exclusion(reason)
         }
         switch item.accessState {
-        case .denied: return "アクセス拒否"
-        case .error: return "読み取りエラー"
-        case .notScanned: return "未走査（クラウド上のみなど）"
-        case .readable: return "一部のみ走査"
+        case .denied: return L10n.accessDenied
+        case .error: return L10n.accessError
+        case .notScanned: return L10n.accessNotScannedCloud
+        case .readable: return L10n.traversalPartial
         }
     }
 
@@ -129,14 +129,14 @@ struct LocationsSheet: View {
 struct PermissionGuidance: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("アクセスが拒否された場所は、このアプリに「フルディスクアクセス」を許可すると読み取れるようになる場合があります。ただし、システムが保護している場所は許可後も読み取れないことがあり、フォルダのアクセス権など別の原因によることもあります。")
+            Text(L10n.permissionGuidance)
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("許可する場合: 設定の一覧でこのアプリをオンにします（一覧にない場合は「+」で追加します）。その後アプリを再起動し、再スキャンしてください。")
+            Text(L10n.permissionSteps)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("フルディスクアクセスの設定を開く") {
+            Button(L10n.openFullDiskAccess) {
                 let fullDiskAccess = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
                 let privacy = URL(string: "x-apple.systempreferences:com.apple.preference.security")
                 if let fullDiskAccess, NSWorkspace.shared.open(fullDiskAccess) {
@@ -146,7 +146,7 @@ struct PermissionGuidance: View {
                     NSWorkspace.shared.open(privacy)
                 }
             }
-            .help("システム設定の「プライバシーとセキュリティ」→「フルディスクアクセス」を開きます。許可はご自身で行ってください。")
+            .help(L10n.openFullDiskAccessHelp)
         }
         .padding(10)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))

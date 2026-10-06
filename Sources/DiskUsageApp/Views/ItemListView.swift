@@ -32,16 +32,16 @@ struct ItemListView: View {
 
     private func emptyTitle(_ directory: ScanItem) -> String {
         switch directory.accessState {
-        case .denied: return "このフォルダは読み取れませんでした"
-        case .error: return "このフォルダの読み取り中にエラーが起きました"
-        case .notScanned: return "このフォルダは走査していません"
+        case .denied: return L10n.emptyDenied
+        case .error: return L10n.emptyError
+        case .notScanned: return L10n.emptyNotScanned
         case .readable:
             switch directory.traversalState {
-            case .pending: return "スキャン中です"
+            case .pending: return L10n.emptyScanning
             case .partial where directory.sizeSummary.hasUnvisitedDescendants:
-                return "走査を中止したため、このフォルダの中身は取得していません"
-            case .excluded: return "このフォルダは除外したため走査していません"
-            default: return "空のフォルダです"
+                return L10n.emptyCancelled
+            case .excluded: return L10n.emptyExcluded
+            default: return L10n.emptyFolder
             }
         }
     }
@@ -58,7 +58,7 @@ struct ItemTable: View {
 
     var body: some View {
         Table(items, selection: $selection) {
-            TableColumn("名前") { item in
+            TableColumn(L10n.columnName) { item in
                 Label {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(item.name)
@@ -77,19 +77,19 @@ struct ItemTable: View {
                         .foregroundStyle(ItemIcon.color(for: item))
                 }
             }
-            TableColumn("割り当て済みサイズ") { item in
+            TableColumn(L10n.columnAllocatedSize) { item in
                 Text(DisplayText.size(of: item))
                     .monospacedDigit()
                     .foregroundStyle(item.displayAllocatedBytes == nil || moved.contains(item.id) ? .secondary : .primary)
                     .strikethrough(moved.contains(item.id))
             }
             .width(min: 120, ideal: 160)
-            TableColumn("割合") { item in
+            TableColumn(L10n.columnShare) { item in
                 ShareBar(bytes: item.displayAllocatedBytes, total: total)
             }
             .width(min: 60, ideal: 100)
-            TableColumn("状態") { item in
-                Text(moved.contains(item.id) ? "ゴミ箱へ移動済み" : DisplayText.access(of: item))
+            TableColumn(L10n.columnStatus) { item in
+                Text(moved.contains(item.id) ? L10n.movedToTrash : DisplayText.access(of: item))
                     .foregroundStyle(item.accessState == .readable && !moved.contains(item.id) ? .secondary : Color.orange)
                     .lineLimit(1)
             }
@@ -150,8 +150,8 @@ struct PageBar: View {
                     Image(systemName: "chevron.left")
                 }
                 .disabled(page.offset == 0)
-                .help("前のページ")
-                Text("\(page.offset + 1)〜\(page.offset + page.items.count) 件目 / \(page.totalCount.formatted()) 件")
+                .help(L10n.previousPage)
+                Text(L10n.pageRange(from: page.offset + 1, to: page.offset + page.items.count, total: page.totalCount))
                     .monospacedDigit()
                 Button {
                     go(page.offset + pageSize)
@@ -159,9 +159,9 @@ struct PageBar: View {
                     Image(systemName: "chevron.right")
                 }
                 .disabled(page.offset + page.items.count >= page.totalCount)
-                .help("次のページ")
+                .help(L10n.nextPage)
                 if page.isProvisional {
-                    Text("上位の一部だけを表示しています。すべての項目はスキャン完了後に表示できます。")
+                    Text(L10n.provisionalNote)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
