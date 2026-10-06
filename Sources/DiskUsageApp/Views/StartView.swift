@@ -55,6 +55,12 @@ struct StartView: View {
                 if model.isPreparingScan {
                     ProgressView(L10n.waitingForPreviousScan)
                         .controlSize(.small)
+                    if model.state == .cancelling {
+                        // 前のスキャンの停止待ちが続く場合も、ここから強制中止できるようにする
+                        ForceStopButton(requestedAt: model.cancelRequestedAt) {
+                            model.forceStopScan()
+                        }
+                    }
                 }
             }
             .padding(12)

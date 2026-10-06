@@ -11,8 +11,25 @@ final class L10nTests: XCTestCase {
         XCTAssertEqual(AppLanguage.preferred(["ja-JP", "en-US"]), .japanese)
         XCTAssertEqual(AppLanguage.preferred(["ja"]), .japanese)
         XCTAssertEqual(AppLanguage.preferred(["en-US", "ja-JP"]), .english)
-        XCTAssertEqual(AppLanguage.preferred(["fr-FR"]), .english, "日本語以外は英語にする")
+        XCTAssertEqual(AppLanguage.preferred(["fr-FR"]), .english, "対応言語がなければ英語にする")
+        XCTAssertEqual(AppLanguage.preferred(["fr-FR", "ja-JP", "en-US"]), .japanese, "macOS と同じく、最初に現れる対応言語を選ぶ")
         XCTAssertEqual(AppLanguage.preferred([]), .english)
+    }
+
+    func testEnglishPluralsAndJoinedTexts() {
+        L10n.language = .english
+        XCTAssertEqual(ByteFormatting.string(1), "1 byte")
+        XCTAssertEqual(ByteFormatting.string(2), "2 bytes")
+        XCTAssertEqual(L10n.filesCount(1), "1 file")
+        XCTAssertEqual(L10n.foldersCount(1), "1 folder")
+        XCTAssertEqual(L10n.treemapOthersTile(count: 1), "1 other")
+        XCTAssertEqual(L10n.volumeUsage(used: nil, total: "500 GB"), "Volume: 500 GB total, usage unknown")
+        XCTAssertEqual(
+            L10n.volumeRow(used: L10n.usedUnknown, total: "500 GB", available: L10n.available("20 GB"), time: "10:00"),
+            "500 GB total — usage unknown, 20 GB available (as of 10:00)"
+        )
+        XCTAssertEqual(L10n.timeRange("9:00", "9:05"), "9:00–9:05")
+        XCTAssertFalse(TrashBlockReason.multipleHardLinks.message.contains("'"), "英語のアポストロフィは ’ を使う")
     }
 
     func testEnglishTexts() {
@@ -22,8 +39,8 @@ final class L10nTests: XCTestCase {
         XCTAssertEqual(ByteFormatting.summaryString(SizeSummary(knownAllocatedBytes: 10_000_000_000, unreadableLocations: 1)), "10.0 GB (incomplete)")
         XCTAssertEqual(DisplayText.state(.completedWithErrors, isStale: true), "Completed (some information missing) — results are out of date")
         XCTAssertEqual(DisplayText.elapsed(125), "2 min 5 s")
-        XCTAssertEqual(TrashBlockReason.protectedLocation("/System").message, "Items in a protected location (/System) can't be moved.")
-        XCTAssertEqual(TrashFailure.unsupported.message, "Moving to the Trash isn't supported here.")
+        XCTAssertEqual(TrashBlockReason.protectedLocation("/System").message, "Items in a protected location (/System) can’t be moved.")
+        XCTAssertEqual(TrashFailure.unsupported.message, "Moving to the Trash isn’t supported here.")
         XCTAssertEqual(L10n.filesCount(1234), "\(1234.formatted()) files")
     }
 

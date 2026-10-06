@@ -273,11 +273,13 @@ final class ScanViewModel {
     }
 
     /// 停止待ち（OS 呼び出しが戻らない）の間だけ、利用者の明示操作で中止を確定する。
+    /// 確定処理（全ノードの確定と索引の作成）は重いため MainActor の外で行い、終端の進捗は
+    /// 購読中のストリームで受け取る。
     func forceStopScan() {
         guard let session, session.currentState == .cancelling else { return }
-        session.forceStop()
-        progress = session.progress
-        result = session.result
+        Task.detached(priority: .userInitiated) {
+            session.forceStop()
+        }
     }
 
     func rescan() async {

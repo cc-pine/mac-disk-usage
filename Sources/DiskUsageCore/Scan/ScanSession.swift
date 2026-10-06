@@ -34,6 +34,7 @@ public final class ScanSession: @unchecked Sendable {
     private var state: ScanState = .scanning
     private var cancelRequested = false
     private var wasForceStopped = false
+    private var finishHandlers: [@Sendable () -> Void] = []
     private var isStale = false
     private var failureDescription: String?
     private let startedAt = Date()
@@ -122,9 +123,21 @@ public final class ScanSession: @unchecked Sendable {
             lock.unlock()
             return
         }
-        wasForceStopped = true
         lock.unlock()
-        finish(termination: .cancelled)
+        finish(termination: .cancelled, forced: true)
+    }
+
+    /// 終端状態が確定したときに一度だけ呼ぶ処理を登録する（進捗タイマーの停止など）。
+    /// すでに確定していれば、その場で呼ぶ。
+    func onFinish(_ handler: @escaping @Sendable () -> Void) {
+        lock.lock()
+        if state.isTerminal {
+            lock.unlock()
+            handler()
+            return
+        }
+        finishHandlers.append(handler)
+        lock.unlock()
     }
 
     /// ゴミ箱移動などの後で、結果が古いことを記録する。走査完了という事実は変えない。
@@ -172,7 +185,8 @@ public final class ScanSession: @unchecked Sendable {
     }
 
     /// 終端状態を一度だけ確定する。保存と集計の確定後に呼ぶ。
-    func finish(termination: ScanTermination) {
+    /// - Parameter forced: 利用者の強制中止による確定。確定がほかの経路と競合した場合は、先に確定した側が残る
+    func finish(termination: ScanTermination, forced: Bool = false) {
         store.finalize()
         // 大きなファイル一覧の全件索引を、終端を通知する前にこのスレッドで作っておく
         store.prepareFileIndex()
@@ -184,6 +198,11 @@ public final class ScanSession: @unchecked Sendable {
             lock.unlock()
             return
         }
+        if forced {
+            wasForceStopped = true
+        }
+        let handlers = finishHandlers
+        finishHandlers.removeAll()
         let next: ScanState
         if cancelRequested {
             next = .cancelled
@@ -217,6 +236,9 @@ public final class ScanSession: @unchecked Sendable {
 
         for waiter in waiters {
             waiter.resume(returning: result)
+        }
+        for handler in handlers {
+            handler()
         }
     }
 

@@ -61,7 +61,7 @@ private struct ResultHeader: View {
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 4) {
                     if let capacity = model.capacity, let total = capacity.totalBytes {
-                        Text(L10n.volumeUsage(used: ByteFormatting.string(capacity.usedBytes), total: ByteFormatting.string(total)))
+                        Text(L10n.volumeUsage(used: capacity.usedBytes.map { ByteFormatting.string($0) }, total: ByteFormatting.string(total)))
                         Text(L10n.volumeAvailable(ByteFormatting.string(capacity.availableBytes), time: DisplayText.time(capacity.fetchedAt)))
                             .foregroundStyle(.secondary)
                     } else {
@@ -85,10 +85,14 @@ private struct ResultHeader: View {
                 if model.result?.counts.problemItems ?? 0 > 0 {
                     PermissionGuidance()
                 }
-            } else if model.result?.wasForceStopped == true {
-                Banner(text: L10n.forceStoppedBanner, color: .orange)
-            } else if let problems = model.progress?.counts.problemItems, problems > 0 {
-                Banner(text: L10n.missingInfoBanner, color: .orange)
+            } else {
+                if model.result?.wasForceStopped == true {
+                    Banner(text: L10n.forceStoppedBanner, color: .orange)
+                }
+                // 強制中止した場合も、取得できなかった情報があることは併せて示す
+                if let problems = model.progress?.counts.problemItems, problems > 0 {
+                    Banner(text: L10n.missingInfoBanner, color: .orange)
+                }
             }
             if model.result?.isStale == true {
                 Banner(text: L10n.staleBanner, color: .orange)
@@ -250,7 +254,7 @@ private struct StatusFooter: View {
         if let progress = model.progress {
             ElapsedText(progress: progress)
             if let finished = progress.finishedAt {
-                Text("\(DisplayText.time(progress.startedAt))〜\(DisplayText.time(finished))")
+                Text(L10n.timeRange(DisplayText.time(progress.startedAt), DisplayText.time(finished)))
                     .foregroundStyle(.secondary)
             } else {
                 Text(L10n.started(DisplayText.time(progress.startedAt)))
@@ -299,7 +303,7 @@ private struct ElapsedText: View {
 }
 
 /// 停止待ちが続いたときだけ出す強制中止ボタン。自動では切り離さず、利用者が選んだときだけ中止を確定する。
-private struct ForceStopButton: View {
+struct ForceStopButton: View {
     /// 停止待ちがこの秒数続いたらボタンを出す
     static let delay: TimeInterval = 3
 

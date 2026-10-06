@@ -106,6 +106,8 @@ public final class ScanCoordinator: @unchecked Sendable {
         let termination = TerminationBox()
 
         let ticker = ProgressTicker(interval: configuration.notifyInterval) { session.publish() }
+        // 強制中止で保存スレッドより先に確定した場合も、タイマーを止める
+        session.onFinish { ticker.cancel() }
         session.publish(force: true)
 
         let ingest = Thread {

@@ -45,6 +45,9 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- Finder と Dock で ja.lproj / en.lproj の CFBundleDisplayName を使う -->
+    <key>LSHasLocalizedDisplayName</key>
+    <true/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

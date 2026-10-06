@@ -9,7 +9,7 @@ public enum ByteFormatting {
             return "-" + string(bytes == Int64.min ? Int64.max : -bytes)
         }
         if bytes < 1000 {
-            return "\(bytes) \(L10n.bytesUnit)"
+            return L10n.byteCount(bytes)
         }
         var value = Double(bytes)
         var unitIndex = 0
