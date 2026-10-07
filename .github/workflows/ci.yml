@@ -21,13 +21,22 @@ jobs:
         env:
           # 起動ディスクの範囲・パッケージ判定・実際のゴミ箱移動を確かめる結合テストを有効にする
           MDU_INTEGRATION: "1"
-      - name: Benchmark (1M synthetic files)
+      # 性能の合格基準（REQUIREMENTS.md §8）。閾値を外れるとテストが失敗する
+      - name: Benchmark (10M synthetic files)
         run: |
           set -o pipefail
           MDU_BENCHMARK=1 swift test -c release --filter BenchmarkTests 2>&1 | tee bench.log
           # 省略されたまま成功扱いにならないよう、計測値が出たことを確かめる
           grep -q '^\[benchmark\] files=' bench.log
           grep '^\[benchmark\]' bench.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Benchmark (real disk, cold cache)
+        run: |
+          set -o pipefail
+          # OS のファイルキャッシュを捨ててから、起動ディスクを走査する速さを測る
+          sudo purge
+          MDU_DISK_BENCHMARK_PATH=/ swift test -c release --filter BenchmarkTests/testRealDiskThroughput 2>&1 | tee disk.log
+          grep -q '^\[benchmark\] diskScan=' disk.log
+          grep '^\[benchmark\]' disk.log >> "$GITHUB_STEP_SUMMARY"
       - name: Build app bundle
         run: scripts/make-app.sh
 

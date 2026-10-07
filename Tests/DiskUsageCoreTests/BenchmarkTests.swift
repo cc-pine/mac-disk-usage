@@ -10,13 +10,13 @@ import Glibc
 /// 決まった形の大きなツリーをその場で生成する模擬ファイルシステム。
 ///
 /// 深さ `depth` まで各フォルダに `fanout` 個のサブフォルダを持ち、最下層のフォルダに
-/// `filesPerLeaf` 個のファイルを置く。既定値で 1,000,000 ファイル・11,111 フォルダ。
+/// `filesPerLeaf` 個のファイルを置く。既定値で 10,000,000 ファイル・111,111 フォルダ。
 struct SyntheticFileSystem: FileSystemProvider {
     let depth: Int
     let fanout: Int
     let filesPerLeaf: Int
 
-    init(depth: Int = 4, fanout: Int = 10, filesPerLeaf: Int = 100) {
+    init(depth: Int = 5, fanout: Int = 10, filesPerLeaf: Int = 100) {
         self.depth = depth
         self.fanout = fanout
         self.filesPerLeaf = filesPerLeaf
@@ -71,15 +71,28 @@ struct SyntheticFileSystem: FileSystemProvider {
     }
 }
 
-/// 100万件規模の走査と問い合わせを計測する。通常のテストでは実行しない。
+/// 性能の合格基準（REQUIREMENTS.md §8、2026-10-07 決定）を検査するベンチマーク。通常のテストでは実行しない。
 ///
-/// 実行: `MDU_BENCHMARK=1 swift test -c release --filter BenchmarkTests`
+/// - 合成した 1000 万件: ピークメモリ 2 GB 以内、走査中と完了後の問い合わせ 100 ms 以内。
+///   実行: `MDU_BENCHMARK=1 swift test -c release --filter BenchmarkTests`
+///   （`MDU_BENCHMARK_DEPTH=4` で 100 万件に減らせる）
+/// - 実ディスクの走査速度: 1000 万件を 5 分以内に走査できる速さ（毎秒 33,334 件）以上。
+///   実行: `MDU_DISK_BENCHMARK_PATH=/ swift test -c release --filter BenchmarkTests/testRealDiskThroughput`
+///   （キャッシュを捨てた状態で測るため、直前に `sudo purge` を実行する）
 final class BenchmarkTests: XCTestCase {
-    func testMillionFileScan() async throws {
+    /// ピークメモリの上限（バイト）
+    static let peakMemoryLimit = 2_000_000_000
+    /// UI の問い合わせの応答時間の上限
+    static let queryLatencyLimit: Duration = .milliseconds(100)
+    /// 1000 万件を 300 秒で走査する速さ（件/秒）
+    static let throughputLimit = 10_000_000.0 / 300
+
+    func testTenMillionFileScan() async throws {
         guard ProcessInfo.processInfo.environment["MDU_BENCHMARK"] == "1" else {
             throw XCTSkip("MDU_BENCHMARK=1 のときだけ実行する")
         }
-        let fs = SyntheticFileSystem()
+        let depth = ProcessInfo.processInfo.environment["MDU_BENCHMARK_DEPTH"].flatMap(Int.init) ?? 5
+        let fs = SyntheticFileSystem(depth: depth)
         let coordinator = ScanCoordinator(provider: fs)
         let clock = ContinuousClock()
 
@@ -97,6 +110,7 @@ final class BenchmarkTests: XCTestCase {
                 if let root = store.rootID {
                     _ = store.children(of: root, offset: 0, limit: 200)
                     _ = store.largestFiles(offset: 0, limit: 200)
+                    _ = store.item(root)
                 }
                 readerLatency.record(ContinuousClock.now - begin)
                 Thread.sleep(forTimeInterval: 0.05)
@@ -134,17 +148,55 @@ final class BenchmarkTests: XCTestCase {
         let childDuration = clock.now - childStart
 
         let pageStart = clock.now
-        _ = store.largestFiles(offset: 500_000, limit: 200)
+        _ = store.largestFiles(offset: fs.expectedFiles / 2, limit: 200)
         let pageDuration = clock.now - pageStart
 
+        let peak = Self.peakResidentBytes()
         XCTAssertEqual(largest.items.count, 200)
         print("""
         [benchmark] files=\(result.counts.files) directories=\(result.counts.directories) items=\(store.itemCount)
         [benchmark] scan=\(scanDuration) updates=\(updates) maxGapBetweenUpdates=\(maxGap)
         [benchmark] readerQueries=\(readerLatency.count) maxReaderLatency=\(readerLatency.maximum)
         [benchmark] largestFilesQueryAfterFinish=\(largestDuration) deepPage=\(pageDuration) leafChildrenQuery=\(childDuration)
-        [benchmark] nodeStride=\(ScanStore.nodeStride) bytes peakRSS=\(Self.peakResidentBytes() / 1_000_000) MB
+        [benchmark] nodeStride=\(ScanStore.nodeStride) bytes peakRSS=\(peak / 1_000_000) MB
         """)
+        XCTAssertLessThanOrEqual(peak, Self.peakMemoryLimit, "ピークメモリは 2 GB 以内")
+        XCTAssertLessThanOrEqual(readerLatency.maximum, Self.queryLatencyLimit, "走査中の問い合わせは 100 ms 以内")
+        for (name, duration) in [("大きなファイル", largestDuration), ("深いページ", pageDuration), ("直下一覧", childDuration)] {
+            XCTAssertLessThanOrEqual(duration, Self.queryLatencyLimit, "完了後の\(name)の問い合わせは 100 ms 以内")
+        }
+    }
+
+    /// 実ディスクを走査し、1000 万件換算で 5 分以内に終わる速さかを測る。
+    ///
+    /// 対象が大きくても CI の時間内に収まるよう、`MDU_DISK_BENCHMARK_SECONDS`（既定 120 秒）で打ち切り、
+    /// それまでの件数から速さを求める。
+    func testRealDiskThroughput() async throws {
+        guard let path = ProcessInfo.processInfo.environment["MDU_DISK_BENCHMARK_PATH"] else {
+            throw XCTSkip("MDU_DISK_BENCHMARK_PATH を指定したときだけ実行する")
+        }
+        let limit = ProcessInfo.processInfo.environment["MDU_DISK_BENCHMARK_SECONDS"].flatMap(Double.init) ?? 120
+        let scope = try XCTUnwrap(ScopeResolver.scope(forPath: path, isVolume: false))
+        let coordinator = ScanCoordinator()
+        let clock = ContinuousClock()
+        let start = clock.now
+        let session = try coordinator.start(scope: scope)
+        let deadline = Task {
+            try await Task.sleep(for: .seconds(limit))
+            session.cancel()
+        }
+        let result = await session.waitUntilFinished()
+        deadline.cancel()
+        let elapsed = clock.now - start
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        let rate = Double(result.counts.enumeratedItems) / max(seconds, 0.001)
+        print("""
+        [benchmark] disk=\(path) state=\(result.state) items=\(result.counts.enumeratedItems) problems=\(result.counts.problemItems)
+        [benchmark] diskScan=\(elapsed) rate=\(Int(rate)) items/s estimatedFor10M=\(Int(10_000_000 / max(rate, 1))) s
+        [benchmark] peakRSS=\(Self.peakResidentBytes() / 1_000_000) MB
+        """)
+        XCTAssertGreaterThan(result.counts.enumeratedItems, 100_000, "速さを測るのに十分な件数を走査する")
+        XCTAssertGreaterThanOrEqual(rate, Self.throughputLimit, "1000 万件を 5 分以内に走査できる速さ")
     }
 
     /// 1つのフォルダに 200,000 件のファイルがある場合の、直下一覧の並べ替えと保存処理への影響を測る。

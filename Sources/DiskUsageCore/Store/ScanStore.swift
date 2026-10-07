@@ -44,9 +44,14 @@ public struct LocatedItemPage: Sendable, Equatable {
 ///
 /// 書き込みはスキャンの保存処理だけが行い、UI からは問い合わせだけを行う。
 /// 内部状態は1つのロックで守り、ノードごとの監視オブジェクトや全ツリーの複製を作らない。
+///
+/// 1000 万件で 2 GB 以内に収めるため、ノードは塊単位の配列に 64 バイトずつ置き、名前は
+/// 1つの領域に UTF-8 で詰め、子は兄弟の連結でたどる。集計はフォルダの分だけ別の表に持つ。
 public final class ScanStore: @unchecked Sendable {
-    /// 1ノードあたりの固定メモリ量（名前の文字列本体などヒープ分は含まない）。計測用。
+    /// 1ノードあたりの固定メモリ量。計測用。
     static var nodeStride: Int { MemoryLayout<Node>.stride }
+    /// 1フォルダあたりの集計表の大きさ。計測用。
+    static var directoryStride: Int { MemoryLayout<DirectoryInfo>.stride }
 
     public let rootPath: String
     /// 大きなファイル一覧の暫定索引に保持する件数
@@ -58,15 +63,19 @@ public final class ScanStore: @unchecked Sendable {
     private let statsLock = NSLock()
     private var publishedRevision = 0
     private var publishedCounts = ScanCounts()
-    private var nodes: [Node] = []
+    private let nodes = ChunkedBuffer<Node>()
+    private let directories = ChunkedBuffer<DirectoryInfo>()
+    private let names = NameStorage()
+    /// デバイス番号の表。ノードには添字だけを持つ（1回のスキャンに現れるデバイスは少ない）
+    private var devices: [UInt64] = []
+    private var deviceSlots: [UInt64: UInt16] = [:]
     /// エラー説明。大半の項目は持たないため疎な辞書にする
     private var errorDescriptions: [Int32: String] = [:]
-    private var children: [[Int32]] = []
     private var counts = ScanCounts()
     private var revision = 0
     private var isFinalized = false
-    private var topFiles: MinHeap
-    private var fileIDs: [Int32] = []
+    private var topFiles = MinHeap()
+    private let fileIDs = ChunkedBuffer<Int32>()
     /// 読み取れなかった項目（発見順）。件数は counts.problemItems と一致する
     private var problemIDs: [Int32] = []
     /// 範囲の方針で除外した項目（発見順）
@@ -82,7 +91,6 @@ public final class ScanStore: @unchecked Sendable {
     public init(rootPath: String, provisionalFileLimit: Int = 10_000) {
         self.rootPath = PathUtilities.normalize(rootPath)
         self.provisionalFileLimit = max(1, provisionalFileLimit)
-        topFiles = MinHeap()
     }
 
     // MARK: - 書き込み
@@ -124,16 +132,18 @@ public final class ScanStore: @unchecked Sendable {
         defer { lock.unlock() }
         guard !isFinalized else { return false }
         // ルートの走査が確定していれば、未完了のディレクトリは残っていない（全ノードを見なくてよい）
-        let hasPending = nodes.first?.traversalState == .pending
+        let hasPending = !nodes.isEmpty && nodes[0].traversalState == .pending
         var hadUnvisited = false
-        for index in nodes.indices where hasPending && nodes[index].kind == .directory && nodes[index].traversalState == .pending {
-            hadUnvisited = true
-            nodes[index].traversalState = .partial
-            if !nodes[index].listingDone {
-                if nodes[index].accessState == .readable {
-                    nodes[index].accessState = .notScanned
+        if hasPending {
+            for index in 0..<nodes.count where nodes[index].directory >= 0 && nodes[index].traversalState == .pending {
+                hadUnvisited = true
+                nodes[index].traversalState = .partial
+                if !nodes[index].listingDone {
+                    if nodes[index].accessState == .readable {
+                        nodes[index].accessState = .notScanned
+                    }
+                    markUnvisited(index)
                 }
-                markUnvisited(index)
             }
         }
         isFinalized = true
@@ -148,70 +158,70 @@ public final class ScanStore: @unchecked Sendable {
         let parent = item.parentID.map { Int32($0.index) } ?? -1
         precondition(parent < Int32(index), "親は子より先に保存する")
         precondition(parent >= 0 || index == 0, "ルート以外は親を持つ")
+        precondition(parent < 0 || nodes[Int(parent)].directory >= 0, "親はフォルダ")
 
         // 負のサイズは取得値として扱えないため、保存時に一度だけ 0 へ補正する（ノードと集計で値を揃える）
         let logicalSize = item.logicalSize.map { max(0, $0) }
         let allocatedSize = item.allocatedSize.map { max(0, $0) }
-        var summary = SizeSummary()
         var traversal: TraversalState
         var listingDone = false
+        var directorySummary = SizeSummary()
         if item.exclusionReason != nil {
             traversal = .excluded
         } else {
-            switch item.kind {
-            case .directory:
-                traversal = .pending
-            case .file:
-                traversal = .complete
-                summary.knownLogicalBytes = logicalSize ?? 0
-                summary.knownAllocatedBytes = allocatedSize ?? 0
-                summary.unknownLogicalItems = logicalSize == nil ? 1 : 0
-                summary.unknownAllocatedItems = allocatedSize == nil ? 1 : 0
-            case .symbolicLink, .other:
-                traversal = .complete
-            }
-        }
-        if item.accessState != .readable, item.exclusionReason == nil {
-            if item.kind == .directory {
-                // 種類は分かったが中身を読めない（クラウド上だけのものを含む）。配下は列挙しない。
-                summary.unreadableLocations = 1
+            traversal = item.kind == .directory ? .pending : .complete
+            if item.kind == .directory, item.accessState != .readable {
+                // 種類は分かったが中身を読めない。配下は列挙しない。
+                directorySummary.unreadableLocations = 1
                 traversal = .partial
                 listingDone = true
-            } else if item.kind == .other {
-                // メタデータを取得できなかった項目。サイズを 0 とみなさず不明として数える。
-                summary.unknownLogicalItems = 1
-                summary.unknownAllocatedItems = 1
             }
         }
 
-        nodes.append(Node(
+        var node = Node(
             parent: parent,
-            name: item.name,
+            name: names.append(item.name),
             kind: item.kind,
             isPackage: item.isPackage,
             logicalSize: item.kind == .file ? logicalSize : nil,
             allocatedSize: item.kind == .file ? allocatedSize : nil,
-            summary: summary,
             modifiedDate: item.modifiedDate,
             createdDate: item.createdDate,
             accessState: item.accessState,
             traversalState: traversal,
-            fileIdentity: item.fileIdentity,
-            exclusionReason: item.exclusionReason,
-            listingDone: listingDone
-        ))
+            exclusionReason: item.exclusionReason
+        )
+        node.listingDone = listingDone
+        if let identity = item.fileIdentity, let slot = deviceSlot(identity.device) {
+            node.deviceSlot = slot
+            node.inode = identity.inode
+        }
+        let summary: SizeSummary
+        if item.kind == .directory {
+            node.directory = Int32(directories.count)
+            directories.append(DirectoryInfo(directorySummary))
+            summary = directorySummary
+        } else {
+            summary = node.ownSummary
+        }
+        if parent >= 0 {
+            let p = Int(parent)
+            let directory = Int(nodes[p].directory)
+            node.nextSibling = directories[directory].firstChild
+            directories[directory].firstChild = Int32(index)
+            directories[directory].childCount += 1
+            if traversal == .pending {
+                directories[directory].pendingChildDirectories += 1
+            } else if traversal == .partial {
+                nodes[p].subtreeIncomplete = true
+            }
+        }
+        nodes.append(node)
         if let message = item.errorDescription {
             errorDescriptions[Int32(index)] = message
         }
-        children.append([])
         if parent >= 0 {
-            children[Int(parent)].append(Int32(index))
             addToAncestors(of: Int(parent), summary)
-            if traversal == .pending {
-                nodes[Int(parent)].pendingChildDirectories += 1
-            } else if traversal == .partial {
-                nodes[Int(parent)].subtreeIncomplete = true
-            }
         }
 
         updateCounts(for: item)
@@ -226,6 +236,18 @@ public final class ScanStore: @unchecked Sendable {
                 offerTopFile(Int32(index))
             }
         }
+    }
+
+    /// デバイス番号の表の添字。表が満杯なら nil（識別情報を持たない項目として扱い、移動を断る）。
+    private func deviceSlot(_ device: UInt64) -> UInt16? {
+        if let slot = deviceSlots[device] {
+            return slot
+        }
+        guard devices.count < Int(Node.noDevice) else { return nil }
+        let slot = UInt16(devices.count)
+        devices.append(device)
+        deviceSlots[device] = slot
+        return slot
     }
 
     private func updateCounts(for item: DiscoveredItem) {
@@ -245,19 +267,20 @@ public final class ScanStore: @unchecked Sendable {
         }
     }
 
+    /// `start`（フォルダ）と、その祖先の集計に加える。
     private func addToAncestors(of start: Int, _ delta: SizeSummary) {
         guard delta != SizeSummary() else { return }
         var cursor = Int32(start)
         while cursor >= 0 {
             let i = Int(cursor)
-            nodes[i].add(delta)
+            directories[Int(nodes[i].directory)].add(delta)
             cursor = nodes[i].parent
         }
     }
 
     private func markListed(_ index: Int, outcome: ListingOutcome) {
-        precondition(index < nodes.count, "列挙完了は項目の保存後に通知する")
-        guard nodes[index].kind == .directory, !nodes[index].listingDone else { return }
+        precondition(nodes.contains(index: index), "列挙完了は項目の保存後に通知する")
+        guard nodes[index].directory >= 0, !nodes[index].listingDone else { return }
         nodes[index].listingDone = true
         switch outcome {
         case .complete:
@@ -301,16 +324,16 @@ public final class ScanStore: @unchecked Sendable {
     private func completeIfPossible(_ start: Int) {
         var index = start
         while true {
-            let node = nodes[index]
-            guard node.traversalState == .pending,
-                  node.listingDone,
-                  node.pendingChildDirectories == 0 else { return }
-            nodes[index].traversalState = node.subtreeIncomplete ? .partial : .complete
-            let parent = node.parent
+            guard nodes[index].traversalState == .pending,
+                  nodes[index].listingDone,
+                  directories[Int(nodes[index].directory)].pendingChildDirectories == 0 else { return }
+            let incomplete = nodes[index].subtreeIncomplete
+            nodes[index].traversalState = incomplete ? .partial : .complete
+            let parent = nodes[index].parent
             guard parent >= 0 else { return }
             let p = Int(parent)
-            nodes[p].pendingChildDirectories -= 1
-            if node.subtreeIncomplete {
+            directories[Int(nodes[p].directory)].pendingChildDirectories -= 1
+            if incomplete {
                 nodes[p].subtreeIncomplete = true
             }
             index = p
@@ -355,7 +378,7 @@ public final class ScanStore: @unchecked Sendable {
     public func item(_ id: ItemID) -> ScanItem? {
         lock.lock()
         defer { lock.unlock() }
-        guard nodes.indices.contains(id.index) else { return nil }
+        guard nodes.contains(index: id.index) else { return nil }
         return snapshot(id.index)
     }
 
@@ -372,12 +395,18 @@ public final class ScanStore: @unchecked Sendable {
 
     /// 直下の ID をサイズ順に返す。ロックを持たずに呼ぶ。
     ///
-    /// 鍵（サイズと名前）だけをロック内で写し、並べ替えはロックの外で行う。数十万件のフォルダを
-    /// 表示していても、保存処理と他の問い合わせを待たせない。同じ版・同じフォルダへの繰り返しの
-    /// 問い合わせ（ページ送り・Treemap）では並べ直さない。
+    /// 鍵（サイズと名前の位置）だけをロック内で集め、並べ替えはロックの外で行う。数十万件のフォルダを
+    /// 表示していても、保存処理と他の問い合わせを待たせない。名前のバイト列は書き込み後に動かないため、
+    /// ロックの外でも読める。同じ版・同じフォルダへの繰り返しの問い合わせ（ページ送り・Treemap）では
+    /// 並べ直さない。
     private func sortedChildren(_ index: Int) -> [Int32]? {
+        struct Key {
+            let size: Int64
+            let name: UnsafeBufferPointer<UInt8>
+            let id: Int32
+        }
         lock.lock()
-        guard nodes.indices.contains(index) else {
+        guard nodes.contains(index: index) else {
             lock.unlock()
             return nil
         }
@@ -387,20 +416,28 @@ public final class ScanStore: @unchecked Sendable {
             return ids
         }
         let sortRevision = revision
-        let keyed = children[index].map { (id: $0, size: sortKey(Int($0)), name: nodes[Int($0)].name) }
+        var keyed: [Key] = []
+        let directory = Int(nodes[index].directory)
+        if directory >= 0 {
+            keyed.reserveCapacity(Int(directories[directory].childCount))
+            var child = directories[directory].firstChild
+            while child >= 0 {
+                let c = Int(child)
+                keyed.append(Key(size: sortKey(c), name: names.bytes(nodes[c].name), id: child))
+                child = nodes[c].nextSibling
+            }
+        }
         lock.unlock()
 
         // 兄弟は親が同じで名前も一意なので、パスによる比較は不要
-        let sorted = keyed.sorted { lhs, rhs in
-            let order = Self.compareSize(lhs.size, rhs.size)
-            if order != 0 {
-                return order < 0
+        keyed.sort { lhs, rhs in
+            if lhs.size != rhs.size {
+                return lhs.size > rhs.size
             }
-            if lhs.name != rhs.name {
-                return lhs.name < rhs.name
-            }
-            return lhs.id < rhs.id
-        }.map { $0.id }
+            let order = NameStorage.compare(lhs.name, rhs.name)
+            return order != 0 ? order < 0 : lhs.id < rhs.id
+        }
+        let sorted = keyed.map(\.id)
 
         lock.lock()
         if revision == sortRevision {
@@ -428,7 +465,8 @@ public final class ScanStore: @unchecked Sendable {
         var restBytes: Int64 = 0
         for child in sorted.dropFirst(page.items.count) {
             // 並べた時点より後にサイズが変わることがあるため、途中で打ち切らずに数える
-            guard let bytes = sortKey(Int(child)), bytes > 0 else { continue }
+            let bytes = sortKey(Int(child))
+            guard bytes > 0 else { continue }
             restCount += 1
             restBytes = TreemapLayout.saturatingAdd(restBytes, bytes)
         }
@@ -458,10 +496,9 @@ public final class ScanStore: @unchecked Sendable {
             defer { lock.unlock() }
             return page(of: cache.ids, offset: offset, limit: limit, isProvisional: true)
         }
-        // 暫定の上位は最大 provisionalFileLimit 件なので、ロックの中で並べる。
-        // ノード配列の参照をロックの外へ持ち出すと、次の保存で配列全体の複製が起きるため避ける。
+        // 暫定の上位は最大 provisionalFileLimit 件なので、ロックの中で並べる
         defer { lock.unlock() }
-        let sorted = sortBySize(topFiles.elements, pathTieBreak: true)
+        let sorted = topFiles.elements.sorted { compareFiles($0, $1, parentOrder: comparePaths) < 0 }
         provisionalCache = (revision, sorted)
         return page(of: sorted, offset: offset, limit: limit, isProvisional: true)
     }
@@ -491,17 +528,41 @@ public final class ScanStore: @unchecked Sendable {
 
     /// 作成役を引き受けた（isPreparingFileIndex を立てた）スレッドだけが呼ぶ。
     ///
-    /// 確定後のノードは変更されないため、配列の参照を取ってロックの外で並べ、
-    /// その間も UI の問い合わせを待たせない。
+    /// 確定後のノードは変更されないため、ロックの外で読んで並べ、その間も UI の問い合わせを待たせない。
     private func buildFileIndex() {
         lock.lock()
-        // 確定後は apply が保存しないため、配列の参照を持ち出しても複製は起きない
         assert(isFinalized, "全件索引は確定後にだけ作る")
-        let snapshot = nodes
-        let ids = fileIDs
         lock.unlock()
 
-        let sorted = Self.sortBySize(ids, nodes: snapshot, rootPath: rootPath, pathTieBreak: true)
+        // 並べ替えの比較でノードや名前を読みに行くと、1000 万件では待ち時間が積み重なる。
+        // 名前とパスを先に整数の順位へ置き換え、比較を鍵の中だけで済ませる。
+        // 同じサイズ・同じ名前のファイルは親フォルダのパス順に並べる。パスの文字列を作らずに済むよう、
+        // フォルダを名前順にたどった順番（パス順と一致する）を振っておく。
+        let directoryRanks = directoryRanks()
+        var keys: [FileKey] = []
+        keys.reserveCapacity(fileIDs.count)
+        for i in 0..<fileIDs.count {
+            let id = fileIDs[i]
+            let parent = Int(nodes[Int(id)].parent)
+            // ルート自身がファイルの場合だけ親がない
+            let rank = parent >= 0 ? directoryRanks[Int(nodes[parent].directory)] : -1
+            keys.append(FileKey(size: sortKey(Int(id)), nameRank: 0, parentRank: rank, id: id))
+        }
+        assignNameRanks(&keys)
+        keys.sort { lhs, rhs in
+            if lhs.size != rhs.size {
+                return lhs.size > rhs.size
+            }
+            if lhs.nameRank != rhs.nameRank {
+                return lhs.nameRank < rhs.nameRank
+            }
+            if lhs.parentRank != rhs.parentRank {
+                return lhs.parentRank < rhs.parentRank
+            }
+            return lhs.id < rhs.id
+        }
+        let sorted = keys.map(\.id)
+        keys = []
 
         lock.lock()
         sortedFileIndex = sorted
@@ -512,6 +573,112 @@ public final class ScanStore: @unchecked Sendable {
         isFileIndexBuilt = true
         indexBuilt.broadcast()
         indexBuilt.unlock()
+    }
+
+    /// 全件索引の並べ替えの鍵。比較は整数だけで行う。
+    private struct FileKey {
+        let size: Int64
+        /// 名前のバイト列の順位。同じ名前は同じ値
+        var nameRank: UInt32
+        /// 親フォルダのパスの順位
+        let parentRank: Int32
+        let id: Int32
+    }
+
+    /// 鍵ごとに名前の順位を振る。確定後にだけ呼ぶ。
+    ///
+    /// 同じ名前（`package.json` など）は多いため、まずハッシュ表で同じ名前をまとめ、異なる名前だけを
+    /// 並べて順位を決める。ハッシュはプロセスごとに種が変わる `Hasher` を使い、名前を細工されても
+    /// 衝突が偏らないようにする。
+    private func assignNameRanks(_ keys: inout [FileKey]) {
+        guard !keys.isEmpty else { return }
+        var capacity = 16
+        while capacity < keys.count + keys.count / 2 {
+            capacity <<= 1
+        }
+        let mask = capacity - 1
+        // 空きは 0、それ以外は「異なる名前」の番号 + 1
+        var table = [UInt32](repeating: 0, count: capacity)
+        var distinct: [NameStorage.Location] = []
+        for i in keys.indices {
+            let location = nodes[Int(keys[i].id)].name
+            let bytes = names.bytes(location)
+            var hasher = Hasher()
+            hasher.combine(bytes: UnsafeRawBufferPointer(bytes))
+            var slot = hasher.finalize() & mask
+            while true {
+                let entry = table[slot]
+                if entry == 0 {
+                    distinct.append(location)
+                    table[slot] = UInt32(distinct.count)
+                    keys[i].nameRank = UInt32(distinct.count - 1)
+                    break
+                }
+                let candidate = distinct[Int(entry - 1)]
+                if candidate == location || NameStorage.compare(names.bytes(candidate), bytes) == 0 {
+                    keys[i].nameRank = entry - 1
+                    break
+                }
+                slot = (slot + 1) & mask
+            }
+        }
+        table = []
+
+        // 異なる名前だけを並べる。先頭 8 バイトを整数にした鍵で、多くの比較を名前を読まずに済ませる
+        struct NameKey {
+            let prefix: UInt64
+            let index: UInt32
+        }
+        var order = distinct.indices.map { index -> NameKey in
+            let bytes = names.bytes(distinct[index])
+            var prefix: UInt64 = 0
+            for j in 0..<8 {
+                // 名前に NUL は含まれないため、短い名前の 0 埋めは辞書順を変えない
+                prefix = prefix << 8 | UInt64(j < bytes.count ? bytes[j] : 0)
+            }
+            return NameKey(prefix: prefix, index: UInt32(index))
+        }
+        order.sort { lhs, rhs in
+            if lhs.prefix != rhs.prefix {
+                return lhs.prefix < rhs.prefix
+            }
+            return NameStorage.compare(names.bytes(distinct[Int(lhs.index)]), names.bytes(distinct[Int(rhs.index)])) < 0
+        }
+        var rankOf = [UInt32](repeating: 0, count: distinct.count)
+        for (rank, key) in order.enumerated() {
+            rankOf[Int(key.index)] = UInt32(rank)
+        }
+        for i in keys.indices {
+            keys[i].nameRank = rankOf[Int(keys[i].nameRank)]
+        }
+    }
+
+    /// フォルダの集計表の添字ごとに、ルートから子を名前順にたどった訪問順を返す。確定後にだけ呼ぶ。
+    ///
+    /// 訪問順の比較は、パスを成分ごとに比べた順（`comparePaths`）と一致する。
+    private func directoryRanks() -> [Int32] {
+        var ranks = [Int32](repeating: 0, count: directories.count)
+        guard !nodes.isEmpty, nodes[0].directory >= 0 else { return ranks }
+        var next: Int32 = 0
+        var stack: [Int32] = [0]
+        var subdirectories: [Int32] = []
+        while let current = stack.popLast() {
+            let c = Int(current)
+            ranks[Int(nodes[c].directory)] = next
+            next += 1
+            subdirectories.removeAll(keepingCapacity: true)
+            var child = directories[Int(nodes[c].directory)].firstChild
+            while child >= 0 {
+                if nodes[Int(child)].directory >= 0 {
+                    subdirectories.append(child)
+                }
+                child = nodes[Int(child)].nextSibling
+            }
+            // 名前の大きい順に積み、小さい順に取り出す
+            subdirectories.sort { compareSiblings($0, $1) > 0 }
+            stack.append(contentsOf: subdirectories)
+        }
+        return ranks
     }
 
     /// 読み取れなかった場所、または範囲の方針で除外した場所を、発見順にパス付きで返す。
@@ -531,7 +698,7 @@ public final class ScanStore: @unchecked Sendable {
     public func ancestry(of id: ItemID) -> [ItemID] {
         lock.lock()
         defer { lock.unlock() }
-        guard nodes.indices.contains(id.index) else { return [] }
+        guard nodes.contains(index: id.index) else { return [] }
         var result: [ItemID] = []
         var cursor = Int32(id.index)
         while cursor >= 0 {
@@ -545,24 +712,20 @@ public final class ScanStore: @unchecked Sendable {
     public func path(of id: ItemID) -> String? {
         lock.lock()
         defer { lock.unlock() }
-        guard nodes.indices.contains(id.index) else { return nil }
+        guard nodes.contains(index: id.index) else { return nil }
         return pathLocked(id.index)
     }
 
     private func pathLocked(_ index: Int) -> String {
-        Self.path(of: index, nodes: nodes, rootPath: rootPath)
-    }
-
-    private static func path(of index: Int, nodes: [Node], rootPath: String) -> String {
-        var names: [String] = []
+        var locations: [NameStorage.Location] = []
         var cursor = Int32(index)
         while cursor > 0 {
-            names.append(nodes[Int(cursor)].name)
+            locations.append(nodes[Int(cursor)].name)
             cursor = nodes[Int(cursor)].parent
         }
         var path = rootPath
-        for name in names.reversed() {
-            path = PathUtilities.join(path, name)
+        for location in locations.reversed() {
+            path = PathUtilities.join(path, names.string(location))
         }
         return path
     }
@@ -574,17 +737,21 @@ public final class ScanStore: @unchecked Sendable {
         return ScanItem(
             id: ItemID(Int32(index)),
             parentID: node.parent >= 0 ? ItemID(node.parent) : nil,
-            name: node.name,
+            name: names.string(node.name),
             kind: node.kind,
             isPackage: node.isPackage,
             logicalSize: node.logicalSize,
             allocatedSize: node.allocatedSize,
-            sizeSummary: node.summary,
+            sizeSummary: node.directory >= 0
+                ? directories[Int(node.directory)].summary(hasUnvisitedDescendants: node.hasUnvisitedDescendants)
+                : node.ownSummary,
             modifiedDate: node.modifiedDate,
             createdDate: node.createdDate,
             accessState: node.accessState,
             traversalState: node.traversalState,
-            fileIdentity: node.fileIdentity,
+            fileIdentity: node.deviceSlot == Node.noDevice
+                ? nil
+                : FileIdentity(device: devices[Int(node.deviceSlot)], inode: node.inode),
             exclusionReason: node.exclusionReason,
             errorDescription: errorDescriptions[Int32(index)]
         )
@@ -597,79 +764,82 @@ public final class ScanStore: @unchecked Sendable {
         return ItemPage(items: items, offset: start, totalCount: ids.count, revision: revision, isProvisional: isProvisional)
     }
 
-    private func sortKey(_ index: Int) -> Int64? {
-        Self.sortKey(index, nodes: nodes)
+    /// 並べ替えに使う割り当て済みサイズ。不明・数えない項目は -1（既知のサイズより後ろに並ぶ）。
+    private func sortKey(_ index: Int) -> Int64 {
+        let directory = Int(nodes[index].directory)
+        if directory < 0 {
+            return nodes[index].kind == .file ? nodes[index].allocatedSortKey : Node.unknownSize
+        }
+        return ScanItem.displayBytes(
+            kind: .directory, ownSize: nil, knownTotal: directories[directory].knownAllocatedBytes,
+            accessState: nodes[index].accessState, traversalState: nodes[index].traversalState
+        ) ?? Node.unknownSize
     }
 
-    private static func sortKey(_ index: Int, nodes: [Node]) -> Int64? {
-        // ノード全体をコピーしないよう、必要なフィールドだけを読む
-        switch nodes[index].kind {
-        case .file:
-            return nodes[index].allocatedSize
-        case .directory:
-            return ScanItem.displayBytes(
-                kind: .directory, ownSize: nil, knownTotal: nodes[index].knownAllocatedBytes,
-                accessState: nodes[index].accessState, traversalState: nodes[index].traversalState
-            )
-        case .symbolicLink, .other:
-            return nil
+    /// ファイルの並び順。サイズの降順、同サイズは名前順、同名は親フォルダのパス順、最後に ID 順。
+    /// 負なら lhs が先。
+    private func compareFiles(_ lhs: Int32, _ rhs: Int32, parentOrder: (Int32, Int32) -> Int) -> Int {
+        let l = Int(lhs), r = Int(rhs)
+        let lSize = sortKey(l), rSize = sortKey(r)
+        if lSize != rSize {
+            return lSize > rSize ? -1 : 1
         }
+        let order = NameStorage.compare(names.bytes(nodes[l].name), names.bytes(nodes[r].name))
+        if order != 0 {
+            return order
+        }
+        let lParent = nodes[l].parent, rParent = nodes[r].parent
+        if lParent != rParent {
+            let pathOrder = parentOrder(lParent, rParent)
+            if pathOrder != 0 {
+                return pathOrder
+            }
+        }
+        return lhs == rhs ? 0 : (lhs < rhs ? -1 : 1)
     }
 
-    /// サイズ順の比較。負なら lhs が先。不明（nil）は末尾。
-    private static func compareSize(_ lhs: Int64?, _ rhs: Int64?) -> Int {
-        switch (lhs, rhs) {
-        case let (a?, b?):
-            return a == b ? 0 : (a > b ? -1 : 1)
-        case (.some, nil):
-            return -1
-        case (nil, .some):
-            return 1
-        case (nil, nil):
-            return 0
+    /// 2つのフォルダのパスを成分ごとに比べる。祖先は子孫より先。負なら lhs が先。
+    private func comparePaths(_ lhs: Int32, _ rhs: Int32) -> Int {
+        // 親のない項目（ルート）は先
+        guard lhs >= 0, rhs >= 0 else {
+            return lhs == rhs ? 0 : (lhs < rhs ? -1 : 1)
         }
+        let lDepth = depth(lhs), rDepth = depth(rhs)
+        var l = lhs, r = rhs
+        for _ in 0..<max(0, lDepth - rDepth) {
+            l = nodes[Int(l)].parent
+        }
+        for _ in 0..<max(0, rDepth - lDepth) {
+            r = nodes[Int(r)].parent
+        }
+        if l == r {
+            // 同じフォルダか、一方が他方の祖先（浅い方が先）
+            return lDepth == rDepth ? 0 : (lDepth < rDepth ? -1 : 1)
+        }
+        while nodes[Int(l)].parent != nodes[Int(r)].parent {
+            l = nodes[Int(l)].parent
+            r = nodes[Int(r)].parent
+        }
+        return compareSiblings(l, r)
     }
 
-    /// サイズの鍵を先に計算してから並べる。同サイズ・同名が多い大量のファイルでも、
-    /// 親フォルダのパスは親ごとに一度だけ組み立てる。
-    private func sortBySize(_ ids: [Int32], pathTieBreak: Bool) -> [Int32] {
-        Self.sortBySize(ids, nodes: nodes, rootPath: rootPath, pathTieBreak: pathTieBreak)
+    /// 同じ親を持つ項目の名前順。同名なら ID 順。
+    private func compareSiblings(_ lhs: Int32, _ rhs: Int32) -> Int {
+        let order = NameStorage.compare(names.bytes(nodes[Int(lhs)].name), names.bytes(nodes[Int(rhs)].name))
+        if order != 0 {
+            return order
+        }
+        return lhs == rhs ? 0 : (lhs < rhs ? -1 : 1)
     }
 
-    private static func sortBySize(_ ids: [Int32], nodes: [Node], rootPath: String, pathTieBreak: Bool) -> [Int32] {
-        struct Key {
-            let id: Int32
-            let size: Int64?
+    private func depth(_ index: Int32) -> Int {
+        var depth = 0
+        var cursor = nodes[Int(index)].parent
+        while cursor >= 0 {
+            depth += 1
+            cursor = nodes[Int(cursor)].parent
         }
-        var keys = ids.map { Key(id: $0, size: sortKey(Int($0), nodes: nodes)) }
-        var parentPaths: [Int32: String] = [:]
-        func parentPath(_ id: Int32) -> String {
-            let parent = nodes[Int(id)].parent
-            if let cached = parentPaths[parent] {
-                return cached
-            }
-            let path = parent >= 0 ? Self.path(of: Int(parent), nodes: nodes, rootPath: rootPath) : ""
-            parentPaths[parent] = path
-            return path
-        }
-        keys.sort { lhs, rhs in
-            let order = compareSize(lhs.size, rhs.size)
-            if order != 0 {
-                return order < 0
-            }
-            let l = Int(lhs.id), r = Int(rhs.id)
-            if nodes[l].name != nodes[r].name {
-                return nodes[l].name < nodes[r].name
-            }
-            if pathTieBreak, nodes[l].parent != nodes[r].parent {
-                let lp = parentPath(lhs.id), rp = parentPath(rhs.id)
-                if lp != rp {
-                    return lp < rp
-                }
-            }
-            return lhs.id < rhs.id
-        }
-        return keys.map(\.id)
+        return depth
     }
 
     private func offerTopFile(_ id: Int32) {
@@ -683,8 +853,8 @@ public final class ScanStore: @unchecked Sendable {
     /// 暫定索引から先に追い出す側か。保存処理の中で呼ぶため、名前やパスは比べずサイズと ID だけで決める
     /// （表示時には全候補を名前・パスの順に並べ直す）。
     private func lowerPriority(_ lhs: Int32, _ rhs: Int32) -> Bool {
-        let order = Self.compareSize(sortKey(Int(rhs)), sortKey(Int(lhs)))
-        return order != 0 ? order < 0 : lhs > rhs
+        let l = sortKey(Int(lhs)), r = sortKey(Int(rhs))
+        return l != r ? l < r : lhs > rhs
     }
 }
 
